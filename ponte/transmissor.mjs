@@ -1,13 +1,15 @@
 // Conexão da ponte com o Transmissor Elízium, com cifragem de ponta a ponta.
 //
 // Identidade: cada computador tem um par de chaves X25519 fixo (~/.elizium-ponte/identidade.json).
-// Cada iPhone também. A cada conexão os dois combinam uma chave nova:
-//   ss1 = DH(computador fixa, iPhone temporária)
-//   ss2 = DH(computador fixa, iPhone fixa)
-//   ss3 = DH(computador temporária, iPhone temporária)
-//   chaves = HKDF-SHA256(ss1‖ss2‖ss3, sal = SHA256(temp iPhone ‖ temp computador), "elizium-v1", 64 bytes)
-// Os primeiros 32 bytes cifram iPhone → computador, os outros 32, computador → iPhone (ChaCha20-Poly1305,
-// nonce = 4 zeros + contador de 64 bits little-endian, sem repetir). O transmissor só vê bytes cifrados.
+// Cada iPhone também. Aperto de mão em duas etapas (no estilo do Noise IK), para que o transmissor
+// não veja nem qual iPhone está conectando:
+//   1. iPhone → {ola, v:2, e: temp iPhone}            computador → {bemvindo, e: temp computador}
+//      k1 = HKDF(DH(computador fixa, temp iPhone) ‖ DH(temp computador, temp iPhone), sal, "elizium-v2-hs")
+//   2. iPhone → cifrado com k1: {auth, s: chave fixa do iPhone, codigo?, nome}
+//      kf = HKDF(k1 ‖ DH(computador fixa, iPhone fixa) ‖ DH(temp computador, iPhone fixa), sal, "elizium-v2")
+//      Só quem tem a chave privada fixa do iPhone chega a kf; tudo o mais vai cifrado com kf.
+//   sal = SHA256(temp iPhone ‖ temp computador). Cada chave tem 64 bytes: 32 iPhone → computador, 32 de volta.
+//   ChaCha20-Poly1305, nonce = 4 zeros + contador de 64 bits little-endian, recomeça em kf.
 //
 // Pareamento: o computador mostra um código de uso único; na primeira conexão o iPhone manda esse código
 // já cifrado, e a chave fixa dele passa a ser reconhecida (~/.elizium-ponte/celulares.json).
@@ -91,24 +93,31 @@ export function startRelay({ relayURL, identity, phonesFile, pairing, name, info
     try {
       if (ch.state === "novo") {
         const hello = JSON.parse(frame.toString("utf8"));
-        if (hello.t !== "ola" || hello.v !== 1) throw new Error("saudação inválida");
-        const phoneStatic = fromB64u(hello.s), phoneEph = fromB64u(hello.e);
-        if (phoneStatic.length !== 32 || phoneEph.length !== 32) throw new Error("chave inválida");
+        if (hello.t !== "ola" || hello.v !== 2) throw new Error("saudação inválida (atualize o app)");
+        const phoneEph = fromB64u(hello.e);
+        if (phoneEph.length !== 32) throw new Error("chave inválida");
         const { privateKey: ephPriv } = generateKeyPairSync("x25519");
         const ephRaw = rawPublic(ephPriv);
-        const ikm = Buffer.concat([dh(identity.privateKey, phoneEph), dh(identity.privateKey, phoneStatic), dh(ephPriv, phoneEph)]);
         const salt = createHash("sha256").update(Buffer.concat([phoneEph, ephRaw])).digest();
-        const okm = Buffer.from(hkdfSync("sha256", ikm, salt, Buffer.from("elizium-v1"), 64));
-        ch.secure = new SecureChannel(okm.subarray(32, 64), okm.subarray(0, 32));
-        ch.phone = b64u(phoneStatic);
+        const k1 = Buffer.from(hkdfSync("sha256", Buffer.concat([dh(identity.privateKey, phoneEph), dh(ephPriv, phoneEph)]),
+                                        salt, Buffer.from("elizium-v2-hs"), 64));
+        ch.hs = { k1, salt, ephPriv, secure: new SecureChannel(k1.subarray(32, 64), k1.subarray(0, 32)) };
         ch.state = "aguardando";
         send(c, Buffer.from(JSON.stringify({ t: "bemvindo", e: b64u(ephRaw) })), false);
         return;
       }
       if (!binary) throw new Error("quadro sem cifra");
-      const msg = ch.secure.open(frame);
       if (ch.state === "aguardando") {
+        const msg = ch.hs.secure.open(frame);
         if (msg.t !== "auth") throw new Error("esperava auth");
+        const phoneStatic = fromB64u(String(msg.s ?? ""));
+        if (phoneStatic.length !== 32) throw new Error("chave do iPhone inválida");
+        const kf = Buffer.from(hkdfSync("sha256",
+          Buffer.concat([ch.hs.k1, dh(identity.privateKey, phoneStatic), dh(ch.hs.ephPriv, phoneStatic)]),
+          ch.hs.salt, Buffer.from("elizium-v2"), 64));
+        ch.secure = new SecureChannel(kf.subarray(32, 64), kf.subarray(0, 32));
+        ch.phone = b64u(phoneStatic);
+        delete ch.hs;
         let known = phones.find((p) => p.chave === ch.phone);
         if (!known && msg.codigo && pairing.valid(msg.codigo)) {
           known = { chave: ch.phone, nome: String(msg.nome ?? "iPhone").slice(0, 60), desde: new Date().toISOString() };
@@ -127,6 +136,7 @@ export function startRelay({ relayURL, identity, phonesFile, pairing, name, info
         sendSecure(c, ch, { t: "ok", computador: name, ...info() });
         return;
       }
+      const msg = ch.secure.open(frame);
       if (msg.t === "req") {
         const res = await handle(msg);
         const body = res.body ?? Buffer.alloc(0);

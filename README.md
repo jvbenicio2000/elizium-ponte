@@ -25,7 +25,8 @@ iPhone ──WebSocket cifrado──> Transmissor Elízium ──> ponte (este c
 ```
 
 - **Transmissor** (`transmissor/`): um Cloudflare Worker com um Durable Object por computador. Ele só repassa bytes cifrados; não consegue ler nada.
-- **Cifragem** (`ponte/transmissor.mjs` e o app): iPhone e computador têm pares de chaves X25519 fixos. A cada conexão combinam uma chave nova (X25519 fixas + temporárias, HKDF-SHA256) e cifram tudo com ChaCha20-Poly1305.
+- **Cifragem** (`ponte/transmissor.mjs` e o app): iPhone e computador têm pares de chaves X25519 fixos. A cada conexão fazem um aperto de mão em duas etapas, no estilo do Noise IK (chaves temporárias + fixas, HKDF-SHA256), e cifram tudo com ChaCha20-Poly1305. A chave fixa do iPhone só viaja cifrada: o transmissor não sabe nem qual iPhone está conectando.
+- **O que o transmissor vê**: o id aleatório do computador, horários, tamanhos das mensagens e os endereços IP. Não vê perguntas, respostas, arquivos nem chaves.
 - **Pareamento**: o computador mostra um código de uso único (vale 30 minutos). Na primeira conexão o iPhone manda esse código já cifrado e passa a ser reconhecido para sempre. O endereço é fixo: não precisa parear de novo quando a ponte religa.
 - **OpenCode** só escuta em 127.0.0.1, com uma senha interna que nunca sai do computador. As chaves de provedores de IA saem do iPhone e ficam no OpenCode do computador escolhido.
 - Modo antigo, sem transmissor: `node ponte.mjs --tunel` usa um túnel rápido da Cloudflare (precisa do cloudflared).

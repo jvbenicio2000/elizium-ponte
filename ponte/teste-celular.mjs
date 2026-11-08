@@ -36,28 +36,33 @@ const seal = (o) => { const c = createCipheriv("chacha20-poly1305", send, nonce(
 const open = (buf) => { const d = createDecipheriv("chacha20-poly1305", recv, nonce(recvN++), { authTagLength: 16 });
   d.setAuthTag(buf.subarray(buf.length - 16)); return JSON.parse(Buffer.concat([d.update(buf.subarray(0, buf.length - 16)), d.final()]).toString()); };
 
-ws.onopen = () => ws.send(JSON.stringify({ t: "ola", v: 1, s: raw(phone).toString("base64url"), e: raw(eph).toString("base64url") }));
+ws.onopen = () => ws.send(JSON.stringify({ t: "ola", v: 2, e: raw(eph).toString("base64url") }));
 ws.onclose = (e) => { console.log("fechou:", e.code, e.reason); process.exit(state === "fim" ? 0 : 1); };
 let body = [];
 ws.onmessage = (ev) => {
   if (typeof ev.data === "string") {
     const m = JSON.parse(ev.data);
     const devEph = Buffer.from(m.e, "base64url");
-    const ikm = Buffer.concat([dh(eph, devStatic), dh(phone, devStatic), dh(eph, devEph)]);
     const salt = createHash("sha256").update(Buffer.concat([raw(eph), devEph])).digest();
-    const okm = Buffer.from(hkdfSync("sha256", ikm, salt, Buffer.from("elizium-v1"), 64));
-    send = okm.subarray(0, 32); recv = okm.subarray(32, 64);
-    ws.send(seal({ t: "auth", codigo: q.c, nome: "iPhone de teste" }));
+    const k1 = Buffer.from(hkdfSync("sha256", Buffer.concat([dh(eph, devStatic), dh(eph, devEph)]), salt, Buffer.from("elizium-v2-hs"), 64));
+    send = k1.subarray(0, 32); recv = k1.subarray(32, 64);
+    // FINGIR=1: announce the paired phone's public key while holding a different private key (an impostor).
+    const impostor = process.env.FINGIR ? generateKeyPairSync("x25519").privateKey : phone;
+    ws.send(seal({ t: "auth", s: raw(phone).toString("base64url"), codigo: q.c, nome: "iPhone de teste" }));
+    const kf = Buffer.from(hkdfSync("sha256", Buffer.concat([k1, dh(impostor, devStatic), dh(impostor, devEph)]), salt, Buffer.from("elizium-v2"), 64));
+    send = kf.subarray(0, 32); recv = kf.subarray(32, 64); sendN = 0; recvN = 0;
     return;
   }
-  const m = open(Buffer.from(ev.data));
+  let m;
+  try { m = open(Buffer.from(ev.data)); } catch { console.log("não consegui decifrar a resposta (chave errada)"); ws.send(seal({ t: "req", i: 1, m: "GET", p: path })); return; }
   if (m.t === "ok") { console.log("pareado com", m.computador, "ponte", m.ponte); ws.send(seal({ t: "req", i: 1, m: "GET", p: path })); return; }
-  if (m.t === "recusado") { console.log("recusado:", m.motivo); state = "fim"; ws.close(); return; }
+  if (m.t === "recusado") { console.log("recusado:", m.motivo); process.exit(0); }
   if (m.t === "res") {
     body.push(Buffer.from(m.b, "base64"));
     if (m.k === m.n - 1) {
       console.log("resposta", m.s, Buffer.concat(body).toString().slice(0, 300));
-      state = "fim"; ws.close();
+      process.exit(0);
     }
   }
 };
+setTimeout(() => { console.log("sem resposta em 20 s"); process.exit(1); }, 20000);
