@@ -6,7 +6,7 @@ $ProgressPreference = "SilentlyContinue"
 
 $Repo = if ($env:ELIZIUM_REPO) { $env:ELIZIUM_REPO } else { "jvbenicio2000/elizium-ponte" }
 $Ramo = if ($env:ELIZIUM_RAMO) { $env:ELIZIUM_RAMO } else { "main" }
-$Transmissor = if ($env:ELIZIUM_TRANSMISSOR) { $env:ELIZIUM_TRANSMISSOR } else { "__TRANSMISSOR__" }
+$Transmissor = if ($env:ELIZIUM_TRANSMISSOR) { $env:ELIZIUM_TRANSMISSOR } else { "https://elizium-transmissor.elizium-transmissor.workers.dev" }
 $Destino = Join-Path $env:USERPROFILE "elizium-ponte"
 $Base = if ($env:ELIZIUM_BASE) { $env:ELIZIUM_BASE } else { "https://raw.githubusercontent.com/$Repo/$Ramo" }
 $NodeDir = Join-Path $env:LOCALAPPDATA "elizium-node"

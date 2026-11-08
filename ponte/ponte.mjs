@@ -28,7 +28,7 @@ import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
 
 const VERSION = "0.3.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
-const DEFAULT_RELAY = "";
+const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
 const flag = (name) => {
   const i = args.indexOf(`--${name}`);

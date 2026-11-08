@@ -6,7 +6,7 @@ set -euo pipefail
 
 REPO="${ELIZIUM_REPO:-jvbenicio2000/elizium-ponte}"
 RAMO="${ELIZIUM_RAMO:-main}"
-TRANSMISSOR="${ELIZIUM_TRANSMISSOR:-__TRANSMISSOR__}"
+TRANSMISSOR="${ELIZIUM_TRANSMISSOR:-https://elizium-transmissor.elizium-transmissor.workers.dev}"
 DESTINO="$HOME/elizium-ponte"
 BASE="${ELIZIUM_BASE:-https://raw.githubusercontent.com/$REPO/$RAMO}"
 
