@@ -7,13 +7,13 @@ Liga o app **Elízium** do iPhone ao agente de programação **OpenCode** do seu
 Mac e Linux (Terminal):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/__REPO__/main/instaladores/instalar.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jvbenicio2000/elizium-ponte/main/instaladores/instalar.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/__REPO__/main/instaladores/instalar.ps1 | iex
+irm https://raw.githubusercontent.com/jvbenicio2000/elizium-ponte/main/instaladores/instalar.ps1 | iex
 ```
 
 O instalador não pede senha de administrador. Ele instala, na pasta do usuário, o Node (se faltar), o OpenCode e a ponte; pergunta se a ponte deve ligar sozinha quando o computador inicia; e mostra o QR code e o código de pareamento. Para ver o código de novo: `node ~/elizium-ponte/ponte.mjs --codigo`.

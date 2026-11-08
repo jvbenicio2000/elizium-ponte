@@ -1,10 +1,10 @@
 # Instalador da Ponte Elízium para Windows (PowerShell).
-#   irm https://raw.githubusercontent.com/__REPO__/main/instaladores/instalar.ps1 | iex
+#   irm https://raw.githubusercontent.com/jvbenicio2000/elizium-ponte/main/instaladores/instalar.ps1 | iex
 # Instala tudo na pasta do usuário, sem pedir administrador: Node (se faltar), OpenCode e a ponte.
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$Repo = if ($env:ELIZIUM_REPO) { $env:ELIZIUM_REPO } else { "__REPO__" }
+$Repo = if ($env:ELIZIUM_REPO) { $env:ELIZIUM_REPO } else { "jvbenicio2000/elizium-ponte" }
 $Ramo = if ($env:ELIZIUM_RAMO) { $env:ELIZIUM_RAMO } else { "main" }
 $Transmissor = if ($env:ELIZIUM_TRANSMISSOR) { $env:ELIZIUM_TRANSMISSOR } else { "__TRANSMISSOR__" }
 $Destino = Join-Path $env:USERPROFILE "elizium-ponte"
@@ -56,7 +56,9 @@ foreach ($f in "ponte.mjs", "transmissor.mjs", "package.json") {
 Push-Location $Destino; & npm install --no-fund --no-audit --omit=dev | Out-Null; Pop-Location
 $cfgDir = Join-Path $env:USERPROFILE ".elizium-ponte"
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-Set-Content -Path (Join-Path $cfgDir "config.json") -Value "{ `"transmissor`": `"$Transmissor`" }" -Encoding UTF8
+if (-not $Transmissor.StartsWith("__")) {
+  Set-Content -Path (Join-Path $cfgDir "config.json") -Value "{ `"transmissor`": `"$Transmissor`" }" -Encoding UTF8
+}
 
 # 4. Ligar sozinha ao entrar no Windows?
 $nodeExe = (Get-Command node).Source

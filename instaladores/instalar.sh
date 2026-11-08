@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Instalador da Ponte Elízium para Mac e Linux.
-#   curl -fsSL https://raw.githubusercontent.com/__REPO__/main/instaladores/instalar.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jvbenicio2000/elizium-ponte/main/instaladores/instalar.sh | bash
 # Instala tudo na pasta do usuário, sem pedir senha: Node (se faltar), OpenCode e a ponte.
 set -euo pipefail
 
-REPO="${ELIZIUM_REPO:-__REPO__}"
+REPO="${ELIZIUM_REPO:-jvbenicio2000/elizium-ponte}"
 RAMO="${ELIZIUM_RAMO:-main}"
 TRANSMISSOR="${ELIZIUM_TRANSMISSOR:-__TRANSMISSOR__}"
 DESTINO="$HOME/elizium-ponte"
@@ -61,7 +61,7 @@ diga "Baixando a ponte…"
 for f in ponte.mjs transmissor.mjs package.json; do curl -fsSL -o "$DESTINO/$f" "$BASE/ponte/$f"; done
 (cd "$DESTINO" && npm install --no-fund --no-audit --omit=dev >/dev/null)
 mkdir -p "$HOME/.elizium-ponte"
-printf '{ "transmissor": "%s" }\n' "$TRANSMISSOR" > "$HOME/.elizium-ponte/config.json"
+case "$TRANSMISSOR" in __*) ;; *) printf '{ "transmissor": "%s" }\n' "$TRANSMISSOR" > "$HOME/.elizium-ponte/config.json" ;; esac
 
 # 4. Ligar sozinha ao iniciar o computador?
 resposta=$(pergunta "Ligar a ponte sozinha sempre que este computador iniciar? (s/n)")
