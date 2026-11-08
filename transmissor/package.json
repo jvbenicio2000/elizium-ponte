@@ -1,0 +1,7 @@
+{
+  "name": "elizium-transmissor",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "wrangler dev --port 8787", "publicar": "wrangler deploy" },
+  "devDependencies": { "wrangler": "^4" }
+}

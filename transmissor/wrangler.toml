@@ -1,0 +1,11 @@
+name = "elizium-transmissor"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[[durable_objects.bindings]]
+name = "COMPUTADORES"
+class_name = "Computador"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Computador"]

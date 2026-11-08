@@ -1,0 +1,9 @@
+{
+  "name": "elizium-ponte",
+  "version": "0.1.0",
+  "description": "Ponte entre o app Elízium (iPhone) e o OpenCode deste computador, por túnel HTTPS, sem VPN.",
+  "type": "module",
+  "bin": { "elizium-ponte": "ponte.mjs" },
+  "dependencies": { "qrcode-terminal": "0.12.0" },
+  "license": "MIT"
+}
