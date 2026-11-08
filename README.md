@@ -29,6 +29,7 @@ iPhone ──WebSocket cifrado──> Transmissor Elízium ──> ponte (este c
 - **O que o transmissor vê**: o id aleatório do computador, horários, tamanhos das mensagens e os endereços IP. Não vê perguntas, respostas, arquivos nem chaves.
 - **Pareamento**: o computador mostra um código de uso único (vale 30 minutos). Na primeira conexão o iPhone manda esse código já cifrado e passa a ser reconhecido para sempre. O endereço é fixo: não precisa parear de novo quando a ponte religa.
 - **OpenCode** só escuta em 127.0.0.1, com uma senha interna que nunca sai do computador. As chaves de provedores de IA saem do iPhone e ficam no OpenCode do computador escolhido.
+- **Arquivos do iPhone** (desde a 0.4.0): o app manda arquivos em pedaços de 300 KB, que a ponte junta e grava só dentro da pasta do usuário, sem nunca substituir um arquivo existente. Relatórios de conversa vão para a pasta escolhida no app (padrão `Documents/Elízium`); anexos de conversa vão para `Documents/Elízium/Anexos`. Word, Excel e PowerPoint (.docx, .xlsx, .pptx) ganham ao lado uma cópia em texto (`.txt`), para qualquer modelo conseguir ler.
 - Modo antigo, sem transmissor: `node ponte.mjs --tunel` usa um túnel rápido da Cloudflare (precisa do cloudflared).
 
 ## Publicar o transmissor

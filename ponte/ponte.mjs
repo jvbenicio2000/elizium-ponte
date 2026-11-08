@@ -20,13 +20,15 @@ import { spawn, execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHTTPServer } from "node:http";
+import { pathToFileURL } from "node:url";
+import { inflateRawSync } from "node:zlib";
 import { createServer } from "node:net";
 import { homedir, hostname, platform } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import qrcode from "qrcode-terminal";
 import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -175,6 +177,103 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
+// Arquivos que o iPhone manda salvar (relatórios de conversa), em pedaços para caber nas mensagens do transmissor.
+// Só grava dentro da pasta do usuário e nunca sobrescreve: acrescenta " (2)", " (3)"…
+const uploads = new Map();   // envio → { partes, total, criado }
+function receivePiece({ envio, pasta, nome, parte, total, dados, destino }) {
+  if (typeof envio !== "string" || typeof nome !== "string" || !Number.isInteger(parte) || !Number.isInteger(total)
+      || total < 1 || total > 400 || parte < 0 || parte >= total || typeof dados !== "string") throw new Error("Pedido de arquivo inválido.");
+  for (const [k, u] of uploads) if (Date.now() - u.criado > 10 * 60 * 1000) uploads.delete(k);
+  const u = uploads.get(envio) ?? { partes: new Map(), total, criado: Date.now() };
+  uploads.set(envio, u);
+  u.partes.set(parte, Buffer.from(dados, "base64"));
+  if (u.partes.size < u.total) return { recebido: u.partes.size, total: u.total };
+  uploads.delete(envio);
+  const home = homedir();
+  // Anexos da conversa ficam numa pasta fixa, que o modelo consegue ler (as regras de leitura não bloqueiam).
+  if (destino === "anexo") pasta = join(home, "Documents", "Elízium", "Anexos");
+  const dir = resolve(isAbsolute(pasta ?? "") ? pasta : join(home, pasta || "Documents/Elízium"));
+  const rel = relative(home, dir);
+  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("A pasta precisa ficar dentro da pasta do usuário deste computador.");
+  mkdirSync(dir, { recursive: true });
+  const clean = basename(nome).replace(/[\/\\?%*:|"<>\x00-\x1f]/g, "-").trim() || "Elizium";
+  const ext = extname(clean);
+  const stem = clean.slice(0, clean.length - ext.length);
+  let path = join(dir, clean);
+  for (let n = 2; existsSync(path); n++) path = join(dir, `${stem} (${n})${ext}`);
+  writeFileSync(path, Buffer.concat([...Array(u.total).keys()].map((i) => u.partes.get(i))), { flag: "wx" });
+  console.log(`Arquivo salvo pelo iPhone: ${path}`);
+  const out = { caminho: path, url: pathToFileURL(path).href };
+  // Word, Excel e PowerPoint viram texto ao lado do original, para qualquer modelo conseguir ler.
+  if (destino === "anexo") {
+    try {
+      const text = officeText(readFileSync(path), ext.toLowerCase());
+      if (text) {
+        const textPath = path + ".txt";
+        writeFileSync(textPath, text);
+        out.texto = textPath;
+        out.textoUrl = pathToFileURL(textPath).href;
+      }
+    } catch (e) {
+      out.avisoTexto = `Não consegui tirar o texto do arquivo: ${e.message}`;
+    }
+  }
+  return out;
+}
+
+// Lê um .zip (formato dos arquivos do Office) sem dependências: diretório central + inflate.
+function unzip(buf) {
+  const sig = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const end = buf.lastIndexOf(sig);
+  if (end < 0) throw new Error("não é um arquivo do Office (zip)");
+  const count = buf.readUInt16LE(end + 10);
+  let off = buf.readUInt32LE(end + 16);
+  const files = new Map();
+  for (let i = 0; i < count; i++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) break;
+    const method = buf.readUInt16LE(off + 10), size = buf.readUInt32LE(off + 20);
+    const nlen = buf.readUInt16LE(off + 28), elen = buf.readUInt16LE(off + 30), clen = buf.readUInt16LE(off + 32);
+    const local = buf.readUInt32LE(off + 42);
+    const name = buf.toString("utf8", off + 46, off + 46 + nlen);
+    const start = local + 30 + buf.readUInt16LE(local + 26) + buf.readUInt16LE(local + 28);
+    const data = buf.subarray(start, start + size);
+    files.set(name, () => (method === 8 ? inflateRawSync(data) : data).toString("utf8"));
+    off += 46 + nlen + elen + clen;
+  }
+  return files;
+}
+const xmlText = (s) => s.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+  .replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n))).replace(/&amp;/g, "&");
+const byNumber = (a, b) => Number(a.match(/(\d+)\.xml$/)?.[1] ?? 0) - Number(b.match(/(\d+)\.xml$/)?.[1] ?? 0);
+
+function officeText(buf, ext) {
+  if (![".docx", ".xlsx", ".pptx"].includes(ext)) return null;
+  const files = unzip(buf);
+  if (ext === ".docx") {
+    const xml = files.get("word/document.xml")?.() ?? "";
+    return xmlText(xml.replace(/<w:tab\/>/g, "\t").replace(/<\/w:p>/g, "\n").replace(/<w:br\/>/g, "\n")).trim();
+  }
+  if (ext === ".pptx") {
+    const slides = [...files.keys()].filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort(byNumber);
+    return slides.map((n, i) => `--- Slide ${i + 1} ---\n` + xmlText(files.get(n)().replace(/<\/a:p>/g, "\n")).trim()).join("\n\n");
+  }
+  // .xlsx: textos compartilhados + células de cada planilha, separadas por tabulação.
+  const shared = [...(files.get("xl/sharedStrings.xml")?.() ?? "").matchAll(/<si>([\s\S]*?)<\/si>/g)].map((m) => xmlText(m[1]));
+  const names = [...(files.get("xl/workbook.xml")?.() ?? "").matchAll(/<sheet [^>]*name="([^"]*)"/g)].map((m) => xmlText(m[1]));
+  const sheets = [...files.keys()].filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort(byNumber);
+  return sheets.map((n, i) => {
+    const rows = [...files.get(n)().matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)].map((r) =>
+      [...r[1].matchAll(/<c ([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)].map((c) => {
+        const attrs = c[1], inner = c[2] ?? "";
+        const v = inner.match(/<v>([\s\S]*?)<\/v>/)?.[1];
+        if (/t="s"/.test(attrs) && v !== undefined) return shared[Number(v)] ?? "";
+        if (/t="inlineStr"/.test(attrs)) return xmlText(inner);
+        return v !== undefined ? xmlText(v) : "";
+      }).join("\t"));
+    return `--- Planilha: ${names[i] ?? i + 1} ---\n` + rows.join("\n");
+  }).join("\n\n");
+}
+
 const bridge = createHTTPServer(async (req, res) => {
   if (!authorized(req)) return json(res, 401, { erro: "Chave de pareamento inválida." });
   const url = new URL(req.url, "http://ponte");
@@ -195,6 +294,15 @@ const bridge = createHTTPServer(async (req, res) => {
     }
     const list = pick();
     return json(res, 200, { ultimo: lastN, eventos: list.map((x) => ({ n: x.n, ...x.e })) });
+  }
+  if (url.pathname === "/ponte/arquivo" && req.method === "POST") {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    try {
+      return json(res, 200, receivePiece(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+    } catch (e) {
+      return json(res, 400, { erro: e.message });
+    }
   }
 
   // Repasse ao OpenCode.
