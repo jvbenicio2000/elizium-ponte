@@ -54,8 +54,8 @@ ws.onmessage = (ev) => {
     return;
   }
   let m;
-  try { m = open(Buffer.from(ev.data)); } catch { console.log("não consegui decifrar a resposta (chave errada)"); ws.send(seal({ t: "req", i: 1, m: process.env.METODO ?? "GET", p: path })); return; }
-  if (m.t === "ok") { console.log("pareado com", m.computador, "ponte", m.ponte); ws.send(seal({ t: "req", i: 1, m: process.env.METODO ?? "GET", p: path })); return; }
+  try { m = open(Buffer.from(ev.data)); } catch { console.log("não consegui decifrar a resposta (chave errada)"); ws.send(seal({ t: "req", i: 1, m: process.env.METODO ?? "GET", p: path, ...(process.env.CORPO ? { b: Buffer.from(process.env.CORPO).toString("base64"), h: { "content-type": "application/json" } } : {}) })); return; }
+  if (m.t === "ok") { console.log("pareado com", m.computador, "ponte", m.ponte); ws.send(seal({ t: "req", i: 1, m: process.env.METODO ?? "GET", p: path, ...(process.env.CORPO ? { b: Buffer.from(process.env.CORPO).toString("base64"), h: { "content-type": "application/json" } } : {}) })); return; }
   if (m.t === "recusado") { console.log("recusado:", m.motivo); process.exit(0); }
   if (m.t === "res") {
     body.push(Buffer.from(m.b, "base64"));
