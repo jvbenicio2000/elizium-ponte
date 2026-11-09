@@ -18,7 +18,7 @@
 
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHTTPServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
@@ -27,8 +27,10 @@ import { homedir, hostname, platform } from "node:os";
 import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
 import qrcode from "qrcode-terminal";
 import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
+import { createClaudeCode } from "./claudecode.mjs";
+import { startGateway } from "./gateway.mjs";
 
-const VERSION = "0.4.0";
+const VERSION = "0.6.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -78,12 +80,58 @@ const cloudflared = findTool("cloudflared", [
   "C:\\Program Files (x86)\\cloudflared\\cloudflared.exe",
   "C:\\Program Files\\cloudflared\\cloudflared.exe",
 ]);
+// Claude Code (opcional): o segundo agente que o app pode escolher.
+const claudeBin = findTool("claude", [
+  join(homedir(), ".local/bin/claude"),
+  join(homedir(), ".local/bin/claude.exe"),
+  join(homedir(), ".claude/local/claude"),
+  join(process.env.APPDATA ?? "", "npm/claude.cmd"),
+]);
 if (!opencode) { console.error("Não achei o OpenCode. Instale com: npm install -g opencode-ai"); process.exit(1); }
 
-const infoDir = join(homedir(), ".elizium-ponte");
+const infoDir = process.env.ELIZIUM_PONTE_DIR ?? join(homedir(), ".elizium-ponte");
 mkdirSync(infoDir, { recursive: true });
 let config = {};
 try { config = JSON.parse(readFileSync(join(infoDir, "config.json"), "utf8")); } catch {}
+
+// Política da empresa: regras do administrador que valem para toda sessão aberta pela ponte e ficam por
+// último, então vencem as do app (no OpenCode a última regra que casa é a que vale). A cópia do sistema,
+// que só o administrador pode gravar, tem prioridade sobre a da pasta do usuário.
+const systemPolicy = isWindows
+  ? join(process.env.ProgramData ?? "C:\\ProgramData", "Elizium", "politica.json")
+  : platform() === "darwin" ? "/Library/Application Support/Elizium/politica.json" : "/etc/elizium/politica.json";
+const userPolicy = join(infoDir, "politica.json");
+if (flag("politica")) {
+  const p = JSON.parse(readFileSync(flag("politica"), "utf8"));
+  if (!p.empresa || !Array.isArray(p.regras)) { console.error("A política precisa de \"empresa\" e de uma lista \"regras\"."); process.exit(1); }
+  copyFileSync(flag("politica"), userPolicy);
+  console.log(`Política de ${p.empresa} instalada (${p.regras.length} regras). Ela vale a partir da próxima mensagem.`);
+  process.exit(0);
+}
+if (args.includes("--sem-politica")) {
+  rmSync(userPolicy, { force: true });
+  console.log(existsSync(systemPolicy) ? `Ainda vale a política do sistema em ${systemPolicy}.` : "Política removida.");
+  process.exit(0);
+}
+let policyCache = { file: null, mtime: 0, value: null };
+function policy() {
+  const file = existsSync(systemPolicy) ? systemPolicy : existsSync(userPolicy) ? userPolicy : null;
+  if (!file) return null;
+  try {
+    const mtime = statSync(file).mtimeMs;
+    if (policyCache.file !== file || policyCache.mtime !== mtime) {
+      const p = JSON.parse(readFileSync(file, "utf8"));
+      const regras = (Array.isArray(p.regras) ? p.regras : []).filter((r) => r && r.permission && r.pattern && ["allow", "deny", "ask"].includes(r.action));
+      policyCache = { file, mtime, value: { empresa: String(p.empresa ?? ""), administrador: String(p.administrador ?? ""), regras, sistema: file === systemPolicy } };
+    }
+    return policyCache.value;
+  } catch {
+    // Política ilegível: fecha tudo em vez de liberar.
+    return { empresa: "?", administrador: "", regras: [{ permission: "*", pattern: "*", action: "deny" }], sistema: file === systemPolicy, erro: "Política ilegível" };
+  }
+}
+const sameRule = (a, b) => a.permission === b.permission && a.pattern === b.pattern && a.action === b.action;
+const endsWith = (list, tail) => tail.length <= list.length && tail.every((r, i) => sameRule(list[list.length - tail.length + i], r));
 const relayURL = args.includes("--tunel") ? "" : (flag("transmissor") ?? process.env.ELIZIUM_TRANSMISSOR ?? config.transmissor ?? DEFAULT_RELAY);
 if (!relayURL && !cloudflared) { console.error("Não achei o cloudflared. Veja github.com/cloudflare/cloudflared/releases"); process.exit(1); }
 
@@ -164,6 +212,17 @@ async function followEvents() {
   }
 }
 followEvents();
+
+// 2b. Claude Code e o tradutor de modelos que ele usa para falar com outros provedores.
+const openCodeJSON = async (path) => {
+  const r = await fetch(`${ocBase}${path}`, { headers: { Authorization: ocAuth } });
+  if (!r.ok) throw new Error(`OpenCode respondeu ${r.status}`);
+  return r.json();
+};
+let claudeCode;
+const gateway = await startGateway({ infoDir, resolve: (p, m) => claudeCode.resolve(p, m), log: (m) => console.log(m) });
+claudeCode = createClaudeCode({ claude: claudeBin, projectDir, infoDir, isWindows, pushEvent, policy, gateway, openCode: openCodeJSON });
+console.log(claudeBin ? `Claude Code: ${claudeBin}` : "Claude Code não encontrado (o app usa só o OpenCode).");
 
 // 3. A ponte: confere a chave de pareamento e repassa ao OpenCode.
 const pairingKey = randomBytes(24).toString("base64url");
@@ -279,7 +338,10 @@ const bridge = createHTTPServer(async (req, res) => {
   const url = new URL(req.url, "http://ponte");
 
   if (url.pathname === "/ponte/info") {
-    return json(res, 200, { ponte: VERSION, computador: name, sistema: platform(), pasta: projectDir, ultimoEvento: lastN });
+    const p = policy();
+    return json(res, 200, { ponte: VERSION, computador: name, sistema: platform(), pasta: projectDir, ultimoEvento: lastN,
+                            agentes: ["opencode", "claude"], claude: claudeCode.info(),
+                            politica: p ? { empresa: p.empresa, administrador: p.administrador, regras: p.regras, sistema: p.sistema } : null });
   }
   if (url.pathname === "/ponte/eventos") {
     const after = Number(url.searchParams.get("depois") ?? lastN);
@@ -294,6 +356,15 @@ const bridge = createHTTPServer(async (req, res) => {
     }
     const list = pick();
     return json(res, 200, { ultimo: lastN, eventos: list.map((x) => ({ n: x.n, ...x.e })) });
+  }
+  if (url.pathname.startsWith("/claude/")) {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    try {
+      return await claudeCode.handle(req, res, url.pathname.slice("/claude".length), Buffer.concat(chunks), json);
+    } catch (e) {
+      return json(res, 500, { erro: e.message });
+    }
   }
   if (url.pathname === "/ponte/arquivo" && req.method === "POST") {
     const chunks = [];
@@ -311,10 +382,32 @@ const bridge = createHTTPServer(async (req, res) => {
   const headers = { ...req.headers, authorization: ocAuth, host: `127.0.0.1:${ocPort}` };
   delete headers["content-length"];
   delete headers["accept-encoding"];
+  let body = ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks);
+  const p = policy();
+  const sessionMatch = url.pathname.match(/^\/session\/([^/]+)(\/(prompt_async|message|command|shell))?$/);
+  if (p && p.regras.length && body && body.length) {
+    try {
+      const j = JSON.parse(body.toString("utf8"));
+      // "tools" troca as regras da sessão inteira: com política, ninguém passa por cima dela assim.
+      if (sessionMatch?.[2] && "tools" in j) delete j.tools;
+      // Regras novas vindas do app: a política vai junto, no fim.
+      if (req.method === "PATCH" && sessionMatch && !sessionMatch[2] && Array.isArray(j.permission)) j.permission = [...j.permission, ...p.regras];
+      body = Buffer.from(JSON.stringify(j));
+    } catch {}
+  }
+  // Antes de cada mensagem, garante que a política está no fim das regras da sessão.
+  if (p && p.regras.length && sessionMatch?.[2] && req.method === "POST") {
+    try { await enforcePolicy(sessionMatch[1], p); } catch (e) { return json(res, 502, { erro: `Não consegui aplicar a política da empresa: ${e.message}` }); }
+  }
   try {
-    const r = await fetch(`${ocBase}${url.pathname}${url.search}`, {
-      method: req.method, headers, body: ["GET", "HEAD"].includes(req.method) ? undefined : Buffer.concat(chunks),
-    });
+    const r = await fetch(`${ocBase}${url.pathname}${url.search}`, { method: req.method, headers, body });
+    // Sessão nova: já nasce com a política.
+    if (p && p.regras.length && req.method === "POST" && url.pathname === "/session" && r.ok) {
+      const text = await r.text();
+      try { await enforcePolicy(JSON.parse(text).id, p); } catch {}
+      res.writeHead(r.status, { "content-type": r.headers.get("content-type") ?? "application/json" });
+      return res.end(text);
+    }
     const out = {};
     r.headers.forEach((v, k) => { if (!["content-encoding", "content-length", "transfer-encoding", "connection"].includes(k)) out[k] = v; });
     res.writeHead(r.status, out);
@@ -324,6 +417,16 @@ const bridge = createHTTPServer(async (req, res) => {
     json(res, 502, { erro: `O OpenCode não respondeu: ${e.message}` });
   }
 });
+async function enforcePolicy(id, p) {
+  const r = await fetch(`${ocBase}/session/${encodeURIComponent(id)}`, { headers: { Authorization: ocAuth } });
+  if (!r.ok) throw new Error(`sessão ${id} não encontrada`);
+  const current = (await r.json()).permission ?? [];
+  if (endsWith(current, p.regras)) return;
+  const u = await fetch(`${ocBase}/session/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { Authorization: ocAuth, "content-type": "application/json" }, body: JSON.stringify({ permission: p.regras }),
+  });
+  if (!u.ok) throw new Error(`OpenCode recusou (${u.status})`);
+}
 const bridgePort = await freePort(ocPort + 1);
 await new Promise((ok) => bridge.listen(bridgePort, "127.0.0.1", ok));
 
@@ -361,7 +464,7 @@ if (relayURL) {
   startRelay({
     relayURL: relayHTTP, identity, pairing, name, handle,
     phonesFile: join(infoDir, "celulares.json"),
-    info: () => ({ ponte: VERSION, sistema: platform(), pasta: projectDir }),
+    info: () => ({ ponte: VERSION, sistema: platform(), pasta: projectDir, empresa: policy()?.empresa ?? null }),
     log: (m) => console.log(m),
   });
   writePairing();

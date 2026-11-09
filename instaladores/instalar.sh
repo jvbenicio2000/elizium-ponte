@@ -58,7 +58,7 @@ echo "OpenCode $(opencode --version)"
 
 # 3. A ponte.
 diga "Baixando a ponte…"
-for f in ponte.mjs transmissor.mjs package.json; do curl -fsSL -o "$DESTINO/$f" "$BASE/ponte/$f"; done
+for f in ponte.mjs transmissor.mjs claudecode.mjs gateway.mjs package.json; do curl -fsSL -o "$DESTINO/$f" "$BASE/ponte/$f"; done
 (cd "$DESTINO" && npm install --no-fund --no-audit --omit=dev >/dev/null)
 mkdir -p "$HOME/.elizium-ponte"
 case "$TRANSMISSOR" in __*) ;; *) printf '{ "transmissor": "%s" }\n' "$TRANSMISSOR" > "$HOME/.elizium-ponte/config.json" ;; esac

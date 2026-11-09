@@ -50,7 +50,7 @@ Write-Host "OpenCode $(& opencode --version)"
 
 # 3. A ponte.
 Diga "Baixando a ponte…"
-foreach ($f in "ponte.mjs", "transmissor.mjs", "package.json") {
+foreach ($f in "ponte.mjs", "transmissor.mjs", "claudecode.mjs", "gateway.mjs", "package.json") {
   Invoke-WebRequest "$Base/ponte/$f" -OutFile (Join-Path $Destino $f) -UseBasicParsing
 }
 Push-Location $Destino; & npm install --no-fund --no-audit --omit=dev | Out-Null; Pop-Location

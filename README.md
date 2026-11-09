@@ -1,6 +1,6 @@
 # Ponte Elízium
 
-Liga o app **Elízium** do iPhone ao agente de programação **OpenCode** do seu computador (Mac, Linux ou Windows), de qualquer rede, sem VPN e com cifragem de ponta a ponta.
+Liga o app **Elízium** do iPhone aos agentes de programação **OpenCode** e **Claude Code** do seu computador (Mac, Linux ou Windows), de qualquer rede, sem VPN e com cifragem de ponta a ponta.
 
 ## Instalar
 
@@ -45,3 +45,33 @@ cd transmissor && npm install && npx wrangler login && npx wrangler deploy
 - [qrcode-terminal](https://github.com/gtanner/qrcode-terminal).
 
 Licença: MIT.
+
+## Política da empresa (0.5.0)
+
+O administrador da empresa pode limitar o que o OpenCode faz quando é usado pela ponte. As regras dele valem para toda sessão aberta pelo iPhone, ficam por último e por isso vencem as do app (no OpenCode, a última regra que casa é a que vale). O campo `tools` das mensagens, que trocaria as regras da sessão, é descartado quando há política.
+
+```json
+{
+  "empresa": "Nome da empresa",
+  "administrador": "ti@empresa.com",
+  "regras": [
+    { "permission": "bash", "pattern": "*", "action": "deny" },
+    { "permission": "read", "pattern": "*financeiro*", "action": "deny" }
+  ]
+}
+```
+
+- Instalar na pasta do usuário: `node ponte.mjs --politica politica.json`; tirar: `node ponte.mjs --sem-politica`.
+- Para o usuário não poder tirar, o administrador grava o arquivo na pasta do sistema, que tem prioridade: `C:\ProgramData\Elizium\politica.json` (Windows), `/Library/Application Support/Elizium/politica.json` (Mac) ou `/etc/elizium/politica.json` (Linux).
+- A ponte relê o arquivo a cada mensagem; um arquivo ilegível bloqueia tudo.
+- O app mostra a empresa e o número de regras na tela do computador.
+
+## Claude Code (0.6.0)
+
+Se o Claude Code estiver instalado no computador, o app pode usar ele no lugar do OpenCode: na tela do computador, em Agente, escolha Claude Code. A ponte roda `claude -p` na pasta do projeto, com o histórico do próprio Claude Code (as sessões abertas no terminal também aparecem no iPhone), e os pedidos de permissão chegam ao iPhone como os do OpenCode. Modos: Pedir, Aceitar edições, Liberar tudo e Só planejar.
+
+- Conta do Claude Code: usa o login que já está no computador (Opus, Sonnet, Haiku ou o padrão).
+- Outros provedores: a ponte traz um tradutor (`gateway.mjs`, só em 127.0.0.1) que recebe os pedidos do Claude Code e repassa a quem já fala a API da Anthropic (Anthropic, MiniMax…) ou traduz para a API de chat da OpenAI (OpenAI, Google, xAI, Groq, DeepSeek, Kimi, OpenRouter…). As chaves são as que o iPhone já envia ao computador. Os modelos grátis do OpenCode não servem aqui: eles só atendem o próprio OpenCode.
+- Claude Code do computador: o app pode apontar o Claude Code usado no terminal para um desses modelos (grava `env` em `~/.claude/settings.json` e guarda os valores anteriores) e voltar ao padrão. Enquanto estiver apontado, a ponte precisa estar ligada.
+- Política da empresa: as regras `deny` viram regras de bloqueio do Claude Code, cada pedido de permissão é conferido contra a política e o modo Liberar tudo deixa de existir. Para proibir o Claude Code no computador, ponha `"claudeCode": false` na política.
+- Outros modelos funcionam pior que os Claude nas ferramentas do Claude Code; recursos como pensamento estendido e cache não passam pelo tradutor.
