@@ -67,11 +67,12 @@ if ($resposta -match "^[sSyY]") {
   $inicio = [Environment]::GetFolderPath("Startup")
   $vbs = Join-Path $inicio "Ponte Elizium.vbs"
   $log = Join-Path $cfgDir "ponte.log"
-  # A small VBS starts the bridge with no window.
+  # A small VBS starts the bridge with no window. The whole cmd line goes inside one more pair of quotes:
+  # with more than two quotes, cmd /c drops the first and the last, which broke the path to node.
   Set-Content -Path $vbs -Encoding ASCII -Value @"
 Set sh = CreateObject("WScript.Shell")
 sh.CurrentDirectory = "$Destino"
-sh.Run "cmd /c ""$nodeExe"" ""$Destino\ponte.mjs"" > ""$log"" 2>&1", 0, False
+sh.Run "cmd /c """"$nodeExe"" ""$Destino\ponte.mjs"" > ""$log"" 2>&1""", 0, False
 "@
   Start-Process wscript.exe -ArgumentList "`"$vbs`""
   Diga "A ponte está ligada e vai ligar sozinha nas próximas vezes."
