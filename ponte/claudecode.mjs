@@ -307,7 +307,8 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(CLAUDE|ANTHROPIC)/.test(k) || k === "CLAUDE_CONFIG_DIR"));
     let settingsEnv;
     if (providerID === "claude") {
-      if (modelID !== "padrao") args.push("--model", modelID);
+      // "default" é dito sempre: ao retomar, o Claude Code repetiria o modelo da última resposta da sessão.
+      args.push("--model", modelID === "padrao" ? "default" : modelID);
       settingsEnv = Object.fromEntries(GATEWAY_KEYS.map((k) => [k, ""]));
     } else {
       settingsEnv = gatewayEnv(providerID, modelID);

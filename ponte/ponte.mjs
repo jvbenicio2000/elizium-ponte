@@ -30,7 +30,7 @@ import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
 import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 
-const VERSION = "0.6.0";
+const VERSION = "0.6.1";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
