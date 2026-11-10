@@ -8,6 +8,8 @@
 //   node teste-locais.mjs baixar comfyui https://…/modelo.safetensors
 //   node teste-locais.mjs remover ollama gemma3:270m
 //   node teste-locais.mjs imagem comfyui sd_xl_base_1.0.safetensors "um veleiro vermelho" 16:9 saida.png
+//
+// Para testar o cancelamento, ponha CANCELAR_EM=<segundos> no ambiente: o download ou a imagem é cancelado depois desse tempo.
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +33,8 @@ function call(method, path, body) {
   });
 }
 const show = (r) => console.log(r.status, JSON.stringify(r.json, null, 2));
+const cancelAfter = Number(process.env.CANCELAR_EM) || 0;
+const cancelLater = (path) => { if (cancelAfter > 0) setTimeout(async () => { console.log("cancelando…"); show(await call("DELETE", path)); }, cancelAfter * 1000); };
 const [action, server, what, ...rest] = process.argv.slice(2);
 const target = server === "comfyui" || /^https:/.test(what ?? "") ? { servidor: server, endereco: what } : { servidor: server, modelo: what };
 
@@ -43,6 +47,7 @@ else if (action === "baixar") {
   const id = started.json?.id;
   if (id) {
     process.on("SIGINT", async () => { show(await call("DELETE", `/baixar/${id}`)); });
+    cancelLater(`/baixar/${id}`);
     let next = 0;
     while (true) {
       const r = await call("GET", `/baixar/${id}?depois=${next}&espera=20`);
@@ -61,6 +66,7 @@ else if (action === "baixar") {
   show(started);
   const id = started.json?.id;
   if (id) {
+    cancelLater(`/imagem/${id}`);
     let next = 0;
     while (true) {
       const r = await call("GET", `/imagem/${id}?depois=${next}&espera=20`);
@@ -80,4 +86,6 @@ else if (action === "baixar") {
 } else {
   console.log("Uso: node teste-locais.mjs lista | consultar | baixar | remover | imagem   (veja o começo deste arquivo)");
 }
+// Dá tempo de o cancelamento chegar ao servidor antes de sair.
+if (cancelAfter > 0) await new Promise((ok) => setTimeout(ok, 3000));
 process.exit(0);
