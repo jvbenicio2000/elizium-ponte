@@ -6,7 +6,7 @@ Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, 
 
 ## O que foi conferido
 
-- Ollama: conferido de verdade em 10/11/2026, pelo app do iPhone (no simulador) falando com a ponte 0.7.0 de um Windows com o Ollama 0.40.13 e os modelos qwen3:1.7b e gemma3:4b. Passaram: a lista (com o campo `imagem`, o detalhe e o tamanho), a resposta de texto com o raciocínio separado, a resposta sobre uma foto com o gemma3:4b (a foto reduzida passa de 400 KB, então o pedido foi em pedaços), os números de uso e o app parar a resposta no meio. Não foi olhado no computador se o Ollama parou de gerar na hora em que o app cancelou.
+- Ollama: conferido de verdade em 10/11/2026, pelo app do iPhone (no simulador) falando com a ponte 0.7.0 de um Windows com o Ollama 0.40.13 e os modelos qwen3:1.7b e gemma3:4b. Passaram: a lista (com o campo `imagem`, o detalhe e o tamanho), a resposta de texto com o raciocínio separado, a resposta sobre uma foto com o gemma3:4b (a foto reduzida passa de 400 KB, então o pedido foi em pedaços), os números de uso e o app parar a resposta no meio. No registro do Ollama (`server.log`) esse pedido aparece cancelado no meio da geração (`srv stop: cancel task`), 6 segundos depois de começar. Com a ponte 0.7.1, no mesmo dia e pelo mesmo caminho, o app passou a mostrar o limite de 16 384 tokens para o gemma3:4b (antes mostrava 8192) e respondeu a uma pergunta nova.
 - LM Studio, llama.cpp, Jan e servidores do `config.json`: escritos pela documentação de cada um. Não foram testados com o programa de verdade.
 - Gerar imagem com modelo local: não existe nesta versão. O campo `tipo` dos modelos vale sempre `"texto"`; `"imagem"` fica reservado.
 
