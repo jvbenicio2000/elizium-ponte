@@ -31,7 +31,7 @@ import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
