@@ -117,11 +117,13 @@ export function createLocais({ config = {}, log = () => {} }) {
       // Modelos só de vetores (embedding) não conversam.
       if (caps.length && !caps.includes("completion")) return null;
       const running = loaded.get(name)?.context_length;
+      // O que a ponte vai até pedir sozinha; aberto com menos, ela recarrega maior quando a conversa crescer.
+      const offered = Math.min(show.contexto ?? contextCap, contextCap);
       return {
         id: name, nome: name, tipo: "texto",
         imagem: caps.length ? caps.includes("vision") : visionHint(name),
         raciocinio: caps.includes("thinking"),
-        contexto: Number.isInteger(running) && running > 0 ? running : Math.min(show.contexto ?? contextCap, contextCap),
+        contexto: Number.isInteger(running) && running > offered ? running : offered,
         contextoMaximo: show.contexto,
         tamanho: Number.isFinite(m.size) ? m.size : null,
         detalhe: [m.details?.parameter_size, m.details?.quantization_level].filter(Boolean).join(" · "),

@@ -6,7 +6,7 @@ Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, 
 
 ## O que foi conferido
 
-- Ollama: escrito pela documentação da API. Ainda não foi testado com o Ollama de verdade respondendo com um modelo baixado; os campos lidos de `/api/show` e `/api/ps` (capacidades e tamanho do contexto) vieram da memória da documentação e precisam ser conferidos nesse teste.
+- Ollama: conferido de verdade em 10/11/2026, pelo app do iPhone (no simulador) falando com a ponte 0.7.0 de um Windows com o Ollama 0.40.13 e os modelos qwen3:1.7b e gemma3:4b. Passaram: a lista (com o campo `imagem`, o detalhe e o tamanho), a resposta de texto com o raciocínio separado, a resposta sobre uma foto com o gemma3:4b (a foto reduzida passa de 400 KB, então o pedido foi em pedaços), os números de uso e o app parar a resposta no meio. Não foi olhado no computador se o Ollama parou de gerar na hora em que o app cancelou.
 - LM Studio, llama.cpp, Jan e servidores do `config.json`: escritos pela documentação de cada um. Não foram testados com o programa de verdade.
 - Gerar imagem com modelo local: não existe nesta versão. O campo `tipo` dos modelos vale sempre `"texto"`; `"imagem"` fica reservado.
 
@@ -82,7 +82,7 @@ Pedido grande: o corpo de um pedido do celular não pode passar de umas centenas
 
 ## Contexto no Ollama
 
-O Ollama, sem pedir, abre o modelo com contexto pequeno (4 mil tokens em placa com menos de 24 GB). A ponte manda `num_ctx` em cada pedido: o tamanho que a conversa precisa, em degraus (8192, 16384, 32768…), até o teto do modelo. Se o modelo já está carregado com contexto suficiente, a ponte repete esse número para não recarregar. O `contexto` anunciado na lista é o menor entre o teto do modelo e 16384; dá para mudar esse número no `config.json`.
+O Ollama, sem pedir, abre o modelo com contexto pequeno (4 mil tokens em placa com menos de 24 GB). A ponte manda `num_ctx` em cada pedido: o tamanho que a conversa precisa, em degraus (8192, 16384, 32768…), até o teto do modelo. Se o modelo já está carregado com contexto suficiente, a ponte repete esse número para não recarregar. O `contexto` anunciado na lista é o menor entre o teto do modelo e 16384; dá para mudar esse número no `config.json`. Se o modelo já está carregado com mais do que isso, a lista anuncia o tamanho carregado. Até a 0.7.0 a lista anunciava o tamanho carregado mesmo quando era menor (8192 logo depois de uma pergunta curta), e o app barrava a conversa cedo demais; a 0.7.1 corrige.
 
 ## Servidores a mais
 
