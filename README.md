@@ -75,3 +75,13 @@ Se o Claude Code estiver instalado no computador, o app pode usar ele no lugar d
 - Claude Code do computador: o app pode apontar o Claude Code usado no terminal para um desses modelos (grava `env` em `~/.claude/settings.json` e guarda os valores anteriores) e voltar ao padrão. Enquanto estiver apontado, a ponte precisa estar ligada.
 - Política da empresa: as regras `deny` viram regras de bloqueio do Claude Code, cada pedido de permissão é conferido contra a política e o modo Liberar tudo deixa de existir. Para proibir o Claude Code no computador, ponha `"claudeCode": false` na política.
 - Outros modelos funcionam pior que os Claude nas ferramentas do Claude Code; recursos como pensamento estendido e cache não passam pelo tradutor.
+
+## Modelos do computador (0.7.0)
+
+O app pode conversar, na aba Conversas, com um modelo que roda neste computador, sem chave: a ponte procura o Ollama (porta 11434), o LM Studio (1234), o llama.cpp (8080) e o Jan (1337), mostra ao app os modelos de cada um e faz a chamada em 127.0.0.1. Modelos que enxergam imagem recebem a imagem junto da pergunta. A resposta chega ao celular por consulta longa, porque a resposta ao vivo desses servidores não atravessa o transmissor nem o túnel.
+
+- O app escolhe um servidor da lista da ponte; nunca manda endereço. Outros servidores entram pelo `config.json` do computador.
+- A ponte não guarda as conversas.
+- Gerar imagem com modelo local ainda não existe.
+- O contrato completo, para quem escreve o app, está em [LOCAIS.md](LOCAIS.md).
+

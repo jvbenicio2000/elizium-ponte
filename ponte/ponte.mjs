@@ -29,8 +29,9 @@ import qrcode from "qrcode-terminal";
 import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
 import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
+import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.6.1";
+const VERSION = "0.7.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -224,6 +225,9 @@ const gateway = await startGateway({ infoDir, resolve: (p, m) => claudeCode.reso
 claudeCode = createClaudeCode({ claude: claudeBin, projectDir, infoDir, isWindows, pushEvent, policy, gateway, openCode: openCodeJSON });
 console.log(claudeBin ? `Claude Code: ${claudeBin}` : "Claude Code não encontrado (o app usa só o OpenCode).");
 
+// 2c. Modelos que rodam neste computador (Ollama, LM Studio e parecidos), para a aba Conversas do app.
+const locais = createLocais({ config, log: (m) => console.log(m) });
+
 // 3. A ponte: confere a chave de pareamento e repassa ao OpenCode.
 const pairingKey = randomBytes(24).toString("base64url");
 const keyBuf = Buffer.from(`Bearer ${pairingKey}`);
@@ -340,7 +344,7 @@ const bridge = createHTTPServer(async (req, res) => {
   if (url.pathname === "/ponte/info") {
     const p = policy();
     return json(res, 200, { ponte: VERSION, computador: name, sistema: platform(), pasta: projectDir, ultimoEvento: lastN,
-                            agentes: ["opencode", "claude"], claude: claudeCode.info(),
+                            agentes: ["opencode", "claude"], claude: claudeCode.info(), locais: true,
                             politica: p ? { empresa: p.empresa, administrador: p.administrador, regras: p.regras, sistema: p.sistema } : null });
   }
   if (url.pathname === "/ponte/eventos") {
@@ -362,6 +366,15 @@ const bridge = createHTTPServer(async (req, res) => {
     for await (const c of req) chunks.push(c);
     try {
       return await claudeCode.handle(req, res, url.pathname.slice("/claude".length), Buffer.concat(chunks), json);
+    } catch (e) {
+      return json(res, 500, { erro: e.message });
+    }
+  }
+  if (url.pathname === "/ponte/locais" || url.pathname.startsWith("/ponte/locais/")) {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    try {
+      return await locais.handle(req, res, url, Buffer.concat(chunks), json);
     } catch (e) {
       return json(res, 500, { erro: e.message });
     }
