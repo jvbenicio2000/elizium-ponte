@@ -4,6 +4,9 @@
 //   node teste-locais.mjs lista
 //   node teste-locais.mjs pesquisar ollama qwen                (modelos para baixar; sem texto, os mais conhecidos)
 //   node teste-locais.mjs opcoes ollama qwen3                  (as variantes de um resultado, com o tamanho)
+//   node teste-locais.mjs pesquisar ollama smollm2 gguf        (junto vêm os modelos GGUF do Hugging Face)
+//   node teste-locais.mjs opcoes ollama hf.co/bartowski/SmolLM2-135M-Instruct-GGUF
+//   node teste-locais.mjs consultar ollama hf.co/bartowski/SmolLM2-135M-Instruct-GGUF:Q4_K_M
 //   node teste-locais.mjs pesquisar comfyui juggernaut
 //   node teste-locais.mjs opcoes comfyui RunDiffusion/Juggernaut-XL-v9
 //   node teste-locais.mjs consultar ollama gemma3:270m

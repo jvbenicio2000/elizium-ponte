@@ -447,26 +447,57 @@ export function createLocais({ config = {}, log = () => {} }) {
   }
   const ollamaTagged = (name) => (name.lastIndexOf(":") > name.lastIndexOf("/") ? name : `${name}:latest`);
   const ollamaDir = () => (process.env.OLLAMA_MODELS ?? "").trim() || join(homedir(), ".ollama", "models");
-  const unknownOllama = (name) => new Error(`Não achei o modelo ${name} na biblioteca do Ollama. Confira o nome em ollama.com/library.`);
+  const HF_HOST = /^(hf\.co|huggingface\.co)$/i;
+  const unknownOllama = (name) => new Error(HF_HOST.test(name.split("/")[0]) && name.includes("/")
+    ? `Não achei o modelo ${name} no Hugging Face. Confira o nome em huggingface.co.`
+    : `Não achei o modelo ${name} na biblioteca do Ollama. Confira o nome em ollama.com/library.`);
+  // O Ollama baixa do Hugging Face pelo nome hf.co/pessoa/repositório:variante. Ele só aceita nomes assim: a pessoa
+  // sem ponto, e cada parte com até 80 letras (conferido no Ollama 0.40.16).
+  const HF_GGUF = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,79}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$/;
+  const OLLAMA_TAG = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,79}$/;
+  const MANIFEST = "application/vnd.docker.distribution.manifest.v2+json";
+  const manifestSize = (j) => [j?.config, ...(Array.isArray(j?.layers) ? j.layers : [])].reduce((n, l) => n + (Number(l?.size) || 0), 0) || null;
+  /**
+   * Tamanho do que o Ollama vai baixar do Hugging Face. O site de lá responde como o registro do Ollama, e a soma
+   * já inclui a peça de imagem (mmproj) quando o modelo tem uma. Uma variante que não existe é recusada aqui, antes
+   * de o download começar.
+   */
+  async function hfSize(repo, tag) {
+    if (!HF_GGUF.test(repo) || !OLLAMA_TAG.test(tag)) return null;
+    let r;
+    try {
+      r = await fetch(`https://huggingface.co/v2/${repo}/manifests/${encodeURIComponent(tag)}`,
+        { headers: { accept: MANIFEST, "user-agent": "elizium-ponte" }, signal: AbortSignal.timeout(10000) });
+    } catch { return null; }
+    // O Hugging Face responde 401 tanto a um modelo que não existe quanto a um modelo fechado.
+    if (r.status === 401 || r.status === 403) throw new Error(`Não achei ${repo} aberto no Hugging Face: ele não existe ou pede login.`);
+    if (r.status === 400 || r.status === 404) {
+      const why = await r.text().catch(() => "");
+      if (/sharded/i.test(why)) throw new Error("Esse modelo está partido em vários arquivos, e o Ollama não baixa assim. Escolha outra variante.");
+      if (/not GGUF|not compatible/i.test(why)) throw new Error("Esse repositório do Hugging Face não tem um modelo no formato GGUF, que é o que o Ollama baixa.");
+      if (/tag|quantization/i.test(why)) throw new Error("O Hugging Face não tem essa variante nesse modelo. Escolha uma da lista.");
+      return null;
+    }
+    if (!r.ok) return null;
+    try { return manifestSize(await r.json()); } catch { return null; }
+  }
   /** Tamanho de um modelo na biblioteca do Ollama, sem baixar nada. null quando não dá para saber de antemão. */
   async function ollamaSize(name) {
     const full = ollamaTagged(name);
     const cut = full.lastIndexOf(":");
     const parts = full.slice(0, cut).split("/");
-    // Com três partes o nome traz o registro (hf.co/pessoa/modelo): o Ollama resolve na hora. Um ponto no nome não
-    // quer dizer registro: llama3.2 e qwen3.8 são nomes da própria biblioteca.
+    // Com três partes o nome traz o registro (hf.co/pessoa/modelo). Só o do Hugging Face a ponte sabe consultar; nos
+    // outros o Ollama resolve na hora. Um ponto no nome não quer dizer registro: llama3.2 e qwen3.8 são da biblioteca.
+    if (parts.length === 3 && HF_HOST.test(parts[0])) return hfSize(`${parts[1]}/${parts[2]}`, full.slice(cut + 1));
     if (parts.length > 2) return null;
     let r;
     try {
       r = await fetch(`https://registry.ollama.ai/v2/${parts.length === 1 ? `library/${parts[0]}` : parts.join("/")}/manifests/${full.slice(cut + 1)}`,
-        { headers: { accept: "application/vnd.docker.distribution.manifest.v2+json" }, signal: AbortSignal.timeout(10000) });
+        { headers: { accept: MANIFEST }, signal: AbortSignal.timeout(10000) });
     } catch { return null; }
     if (r.status === 404) throw unknownOllama(name);
     if (!r.ok) return null;
-    try {
-      const j = await r.json();
-      return [j.config, ...(Array.isArray(j.layers) ? j.layers : [])].reduce((n, l) => n + (Number(l?.size) || 0), 0) || null;
-    } catch { return null; }
+    try { return manifestSize(await r.json()); } catch { return null; }
   }
 
   const decode = (t) => { try { return decodeURIComponent(t); } catch { return t; } };
@@ -540,7 +571,9 @@ export function createLocais({ config = {}, log = () => {} }) {
       const modelo = ollamaName(j.modelo);
       let tags;
       try { tags = await getJSON(`${s.url}/api/tags`); } catch { throw offline(s); }
-      const instalado = (tags.models ?? []).some((m) => (m.name ?? m.model) === ollamaTagged(modelo));
+      // Sem diferença de maiúsculas: no Hugging Face a variante vale como Q4_K_M ou q4_k_m, e o Ollama guarda uma delas.
+      const wanted = ollamaTagged(modelo).toLowerCase();
+      const instalado = (tags.models ?? []).some((m) => String(m.name ?? m.model).toLowerCase() === wanted);
       return { servidor: s.id, modelo, tamanho: await ollamaSize(modelo), livre: await ollamaFree(s), instalado };
     }
     if (s.tipo === "comfyui") {
@@ -559,6 +592,7 @@ export function createLocais({ config = {}, log = () => {} }) {
   // continua aceitando o nome escrito à mão. No ComfyUI a pesquisa usa a API pública do Hugging Face.
   // A pesquisa do Ollama traz também os modelos publicados por quem tem conta no site (pessoa/modelo), que ficam em
   // ollama.com/<pessoa>/<modelo>: variações que a biblioteca não tem, como as "abliterated". O Ollama não confere esses.
+  // Junto vêm os modelos GGUF do Hugging Face, que o Ollama baixa pelo nome hf.co/<pessoa>/<repositório>:<variante>.
   // A ponte só abre esses dois sites; o que o app escreve entra na pesquisa como texto, nunca como endereço.
 
   const HF = "https://huggingface.co";
@@ -613,7 +647,7 @@ export function createLocais({ config = {}, log = () => {} }) {
         id: name, nome: name, descricao: plainText(/<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(block)?.[1] ?? "").slice(0, 300),
         detalhe: [comunidade ? "da comunidade" : "", tamanhos.join(", "), imagem ? "vê imagem" : "", raciocinio ? "raciocina" : "",
           downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
-        imagem, raciocinio, downloads, comunidade,
+        imagem, raciocinio, downloads, comunidade, origem: "ollama",
       });
     }
     return out;
@@ -700,7 +734,7 @@ export function createLocais({ config = {}, log = () => {} }) {
       out.push({
         id: m.id, nome: m.id, descricao: "",
         detalhe: [family, files === 1 ? "1 arquivo" : `${files} arquivos`, downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
-        imagem: false, raciocinio: false, downloads,
+        imagem: false, raciocinio: false, downloads, origem: "huggingface",
       });
     }
     return out.slice(0, 30);
@@ -719,14 +753,113 @@ export function createLocais({ config = {}, log = () => {} }) {
     return files.map((f) => ({ nome: f.rfilename, alvo: `${HF}/${repo}/resolve/main/${encodeURIComponent(f.rfilename)}`, tamanho: Number(f.size) || null, detalhe: "" }));
   }
 
+  // ---- Modelos GGUF do Hugging Face, para o Ollama ----
+  //
+  // Um repositório GGUF traz o mesmo modelo em várias compressões, um arquivo para cada. O Ollama escolhe o arquivo
+  // pela etiqueta: o nome da compressão (Q4_K_M) ou o nome inteiro do arquivo. A lista de compressões abaixo é a que
+  // o registro do Hugging Face reconhece; conferida em 11/11/2026 contra 130 arquivos de 8 repositórios: quando só um
+  // arquivo do repositório tem a compressão, ela escolhe esse arquivo. Quando dois arquivos têm a mesma (Q4_0 e
+  // Q4_0_4_4, ou um modelo e a versão "mtp" dele), ou quando o nome não tem uma compressão da lista (Q4_K_L), vale o
+  // nome do arquivo.
+  const QUANT = new RegExp("(?:F32|F16|Q4_0|Q4_1|Q4_1_SOME_F16|Q4_2|Q4_3|Q8_0|Q5_0|Q5_1|Q2_K|Q3_K_S|Q3_K_M|Q3_K_L|Q4_K_S|Q4_K_M|Q5_K_S|Q5_K_M"
+    + "|Q6_K|IQ2_XXS|IQ2_XS|Q2_K_S|IQ3_XS|IQ3_XXS|IQ1_S|IQ4_NL|IQ3_S|IQ3_M|IQ2_S|IQ2_M|IQ4_XS|IQ1_M|BF16|Q4_0_4_4|Q4_0_4_8|Q4_0_8_8"
+    + "|TQ1_0|TQ2_0|MXFP4_MOE|Q2_K_XL|Q3_K_XL|Q4_K_XL|Q5_K_XL|Q6_K_XL|Q8_K_XL)(?:_[A-Z]+)?", "g");
+  const quantOf = (file) => file.toUpperCase().match(QUANT)?.at(-1) ?? null;
+  /** Modelo partido em vários arquivos (…-00001-of-00003.gguf): o Ollama não baixa assim. */
+  const SHARD = /-\d{5}-of-\d{5}\.gguf$/i;
+  const rootGGUF = (f) => typeof f === "string" && /^[A-Za-z0-9_][A-Za-z0-9._-]*\.gguf$/i.test(f);
+  /** Arquivo que é um modelo inteiro: fica na raiz, não é pedaço nem a peça de imagem (mmproj) ou de medida (imatrix). */
+  const modelGGUF = (f) => rootGGUF(f) && !SHARD.test(f) && !/mmproj|imatrix/i.test(f);
+  /** As variantes de um repositório que o Ollama consegue pedir, cada uma com a etiqueta que escolhe o arquivo dela. */
+  function ggufVariants(siblings) {
+    const files = (Array.isArray(siblings) ? siblings : []).filter((f) => modelGGUF(f?.rfilename));
+    const times = new Map();
+    for (const f of files) { const q = quantOf(f.rfilename); if (q) times.set(q, (times.get(q) ?? 0) + 1); }
+    const out = [];
+    for (const f of files) {
+      const q = quantOf(f.rfilename);
+      const etiqueta = q && times.get(q) === 1 ? q : f.rfilename;
+      if (OLLAMA_TAG.test(etiqueta)) out.push({ etiqueta, tamanho: Number(f.size) || null });
+    }
+    return out;
+  }
+  /** Tipos de modelo que conversam. Muito repositório GGUF não diz o tipo; esses ficam, a não ser que as marcas digam outra coisa. */
+  const HF_CHAT = new Set(["text-generation", "image-text-to-text", "video-text-to-text", "audio-text-to-text", "any-to-any"]);
+  const HF_NOT_CHAT = /^(text-to-image|image-to-image|text-to-video|image-to-video|diffusers|comfyui|stable-diffusion.*|flux|lora|controlnet|sentence-transformers|feature-extraction|sentence-similarity|embeddings?|reranker|text-ranking|text-to-speech|tts|automatic-speech-recognition)$/i;
+  async function hfJSON(url, missing) {
+    const body = await sitePage(url, "Hugging Face", missing);
+    if (body === null) return null;
+    try { return JSON.parse(body); } catch { throw new Error("O Hugging Face respondeu algo que não entendi. Tente de novo daqui a pouco."); }
+  }
+  async function hfSearch(texto) {
+    const q = new URLSearchParams({ search: texto, filter: "gguf", sort: "downloads", direction: "-1", limit: "40", full: "true" });
+    const list = await hfJSON(`${HF}/api/models?${q}`);
+    const out = [];
+    for (const m of Array.isArray(list) ? list : []) {
+      // Fora das sugestões: modelo que pede login, o marcado como conteúdo adulto e o que o Ollama não aceita pelo nome.
+      if (typeof m?.id !== "string" || !HF_GGUF.test(m.id) || m.gated || m.private || adult(m)) continue;
+      if (m.pipeline_tag != null && !HF_CHAT.has(m.pipeline_tag)) continue;
+      if ((Array.isArray(m.tags) ? m.tags : []).some((t) => HF_NOT_CHAT.test(String(t)))) continue;
+      const files = Array.isArray(m.siblings) ? m.siblings : [];
+      const variantes = ggufVariants(files).length;
+      if (!variantes) continue;
+      const imagem = files.some((f) => rootGGUF(f?.rfilename) && /mmproj/i.test(f.rfilename));
+      const downloads = Number(m.downloads) || null;
+      out.push({
+        id: `hf.co/${m.id}`, nome: m.id, descricao: "",
+        detalhe: ["do Hugging Face", variantes === 1 ? "1 variante" : `${variantes} variantes`, imagem ? "vê imagem" : "",
+          downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
+        imagem, raciocinio: false, downloads, comunidade: true, origem: "huggingface",
+      });
+    }
+    return out.slice(0, 20);
+  }
+  /** Quantas variantes de um repositório vão para o celular. */
+  const HF_MAX = 60;
+  const contextText = (n) => (n >= 1024 * 1000 ? `${Math.round(n / 1024 / 102.4) / 10}M`.replace(".", ",") : n >= 1024 ? `${Math.round(n / 1024)}K` : String(n));
+  async function hfOptions(repo) {
+    const m = await hfJSON(`${HF}/api/models/${repo}?blobs=true`, [401, 403, 404]);
+    if (m === null) throw new Error(`Não achei ${repo} aberto no Hugging Face.`);
+    if (m?.gated || m?.private) throw new Error("Esse modelo pede login no Hugging Face. Escolha um modelo aberto.");
+    const id = typeof m?.id === "string" && HF_GGUF.test(m.id) ? m.id : repo;
+    const files = Array.isArray(m?.siblings) ? m.siblings : [];
+    const found = ggufVariants(files);
+    if (!found.length) {
+      throw new Error(files.some((f) => typeof f?.rfilename === "string" && SHARD.test(f.rfilename))
+        ? "Esse modelo está partido em vários arquivos, e o Ollama não baixa assim. Escolha outro modelo."
+        : "Não achei um arquivo de modelo no formato GGUF nesse repositório.");
+    }
+    const context = Number(m?.gguf?.context_length) || 0;
+    const vision = files.some((f) => rootGGUF(f?.rfilename) && /mmproj/i.test(f.rfilename));
+    const detalhe = [context ? `contexto ${contextText(context)}` : "", vision ? "texto, imagem" : "texto"].filter(Boolean).join(" · ");
+    // Repositório com variantes demais: ficam primeiro as que têm etiqueta de compressão; as pedidas pelo nome do
+    // arquivo são as repetidas e as fora do padrão.
+    const byFile = (v) => /\.gguf$/i.test(v.etiqueta);
+    const kept = found.length > HF_MAX ? [...found.filter((v) => !byFile(v)), ...found.filter(byFile)].slice(0, HF_MAX) : found;
+    // Do menor para o maior, com a Q4_K_M na frente: é a compressão que o próprio Ollama usa na biblioteca dele.
+    kept.sort((a, b) => (b.etiqueta === "Q4_K_M") - (a.etiqueta === "Q4_K_M") || (a.tamanho ?? Infinity) - (b.tamanho ?? Infinity));
+    // O tamanho aqui é o do arquivo do modelo. Num modelo que vê imagem o Ollama baixa junto a peça de imagem
+    // (mmproj), e o total certo é o que /consultar informa antes do download.
+    return kept.map((v) => ({ nome: v.etiqueta, alvo: `hf.co/${id}:${v.etiqueta}`, tamanho: v.tamanho, detalhe }));
+  }
+
   async function search(j) {
     const s = findServer(j?.servidor);
     const texto = (typeof j.texto === "string" ? j.texto : "").trim().replace(/\s+/g, " ").slice(0, 80);
     const key = texto.toLowerCase();
     if (s.tipo === "ollama") {
-      // "qwen3:0.6b" é o modelo qwen3 com a etiqueta 0.6b; a pesquisa do site só conhece o nome, sem a etiqueta.
-      const nome = texto.split(":")[0].trim();
-      return { servidor: s.id, texto, resultados: await remembered(`ollama|${nome.toLowerCase()}`, () => ollamaSearch(nome)) };
+      // Quem escreve hf.co/pessoa/modelo, ou o endereço da página do modelo, quer só o Hugging Face.
+      const direto = /^(?:https?:\/\/)?(?:www\.)?(?:hf\.co|huggingface\.co)\/(.*)$/i.exec(texto);
+      // "qwen3:0.6b" é o modelo qwen3 com a etiqueta 0.6b; a pesquisa dos sites só conhece o nome, sem a etiqueta.
+      const nome = (direto ? direto[1] : texto).split(":")[0].trim();
+      const asked = [];
+      if (!direto) asked.push(remembered(`ollama|${nome.toLowerCase()}`, () => ollamaSearch(nome)));
+      // Sem texto, a lista é a dos mais baixados do Ollama; o Hugging Face entra quando há o que procurar.
+      if (nome.length >= 2) asked.push(remembered(`hf|${nome.toLowerCase()}`, () => hfSearch(nome)));
+      // Um dos dois sites fora do ar não esconde o que o outro achou.
+      const got = await Promise.allSettled(asked);
+      if (got.length && got.every((g) => g.status === "rejected")) throw got[0].reason;
+      return { servidor: s.id, texto, resultados: got.flatMap((g) => (g.status === "fulfilled" ? g.value : [])) };
     }
     if (s.tipo === "comfyui") return { servidor: s.id, texto, resultados: await remembered(`imagem|${key}`, () => imageSearch(texto)) };
     throw new Error(`O ${s.nome} não tem pesquisa de modelos por aqui.`);
@@ -736,11 +869,14 @@ export function createLocais({ config = {}, log = () => {} }) {
     const s = findServer(j?.servidor);
     const modelo = typeof j.modelo === "string" ? j.modelo.trim() : "";
     if (s.tipo === "ollama") {
-      if (!OLLAMA_PAGE.test(modelo)) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
-      const list = await remembered(`ollama-opcoes|${modelo}`, () => ollamaOptions(modelo));
+      // Um resultado do Hugging Face chega como hf.co/pessoa/repositório; os outros são nomes do site do Ollama.
+      const hf = /^hf\.co\/(.*)$/i.exec(modelo)?.[1];
+      if (hf === undefined ? !OLLAMA_PAGE.test(modelo) : !HF_GGUF.test(hf)) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
+      const list = hf === undefined ? await remembered(`ollama-opcoes|${modelo}`, () => ollamaOptions(modelo))
+        : await remembered(`hf-opcoes|${hf.toLowerCase()}`, () => hfOptions(hf));
       let have = new Set();
-      try { have = new Set(((await getJSON(`${s.url}/api/tags`)).models ?? []).map((m) => m.name ?? m.model)); } catch {}
-      return { servidor: s.id, modelo, opcoes: list.map((o) => ({ ...o, instalado: have.has(ollamaTagged(o.alvo)) })) };
+      try { have = new Set(((await getJSON(`${s.url}/api/tags`)).models ?? []).map((m) => String(m.name ?? m.model).toLowerCase())); } catch {}
+      return { servidor: s.id, modelo, opcoes: list.map((o) => ({ ...o, instalado: have.has(ollamaTagged(o.alvo).toLowerCase()) })) };
     }
     if (s.tipo === "comfyui") {
       if (!HF_REPO.test(modelo) || modelo.includes("..")) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
