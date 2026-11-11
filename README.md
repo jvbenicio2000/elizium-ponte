@@ -82,7 +82,7 @@ O app pode conversar, na aba Conversas, com um modelo que roda neste computador,
 
 - O app escolhe um servidor da lista da ponte; nunca manda endereço. Outros servidores entram pelo `config.json` do computador.
 - A ponte não guarda as conversas.
-- Baixar e remover modelos pelo celular (0.8.0): no Ollama, pelo nome do modelo na biblioteca; no ComfyUI, pelo endereço https de um arquivo `.safetensors`, que vai para a pasta de checkpoints. A ponte informa o tamanho e o espaço livre antes, e o download segue no computador mesmo com o app fechado.
+- Baixar e remover modelos pelo celular (0.8.0): no Ollama, pelo nome do modelo na biblioteca; no ComfyUI, pelo endereço https de um arquivo `.safetensors`, que vai para a pasta de checkpoints. A ponte informa o tamanho e o espaço livre antes, e o download segue no computador mesmo com o app fechado. Da 0.8.1 em diante, cancelar um download do Ollama apaga também os pedaços que ele deixava no disco.
 - Gerar imagem (0.8.0): se o ComfyUI estiver ligado (porta 8188), os checkpoints dele aparecem como modelos de imagem e o app gera a imagem neste computador. A imagem pronta vai para o celular e não fica guardada aqui.
 - O contrato completo, para quem escreve o app, está em [LOCAIS.md](LOCAIS.md).
 
