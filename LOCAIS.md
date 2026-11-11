@@ -1,8 +1,8 @@
-# Modelos do computador: contrato da ponte (0.8.0)
+# Modelos do computador: contrato da ponte (0.9.0)
 
-Serve para o app usar um modelo que roda no computador pareado: conversar, na aba Conversas, com um modelo de texto (Ollama, LM Studio, llama.cpp, Jan ou outro servidor que fale a API de chat da OpenAI); gerar imagem com um modelo do ComfyUI; e, desde a 0.8.0, baixar e remover modelos do computador pelo celular. Não há chave: a ponte chama o servidor em 127.0.0.1 e o app fala só com a ponte, com a chave de pareamento de sempre.
+Serve para o app usar um modelo que roda no computador pareado: conversar, na aba Conversas, com um modelo de texto (Ollama, LM Studio, llama.cpp, Jan ou outro servidor que fale a API de chat da OpenAI); gerar imagem com um modelo do ComfyUI; e, desde a 0.8.0, baixar e remover modelos do computador pelo celular, com pesquisa pelo nome desde a 0.9.0. Não há chave: a ponte chama o servidor em 127.0.0.1 e o app fala só com a ponte, com a chave de pareamento de sempre.
 
-Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, como o resto da ponte. A ponte que tem isso responde `"locais": true` em `GET /ponte/info`; se o campo faltar, a ponte é anterior à 0.7.0. Baixar, remover e gerar imagem existem a partir da 0.8.0: numa ponte mais antiga, os servidores da lista vêm sem os campos `baixa` e `remove`, e o app deve tratar a falta deles como "não pode".
+Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, como o resto da ponte. A ponte que tem isso responde `"locais": true` em `GET /ponte/info`; se o campo faltar, a ponte é anterior à 0.7.0. Baixar, remover e gerar imagem existem a partir da 0.8.0: numa ponte mais antiga, os servidores da lista vêm sem os campos `baixa` e `remove`, e o app deve tratar a falta deles como "não pode". A pesquisa de modelos existe a partir da 0.9.0: o servidor que a tem vem com `"pesquisa": true`.
 
 ## O que foi conferido
 
@@ -15,6 +15,7 @@ Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, 
 - Download do ComfyUI pelo endereço, começado no app: conferido em 10/11/2026 pelo app do iPhone (no simulador), pelo transmissor, falando com a ponte 0.8.2 de um Mac com processador Intel (macOS 26.5, Node 26.13, ComfyUI 0.45.0). Dois arquivos de 6,94 GB do Hugging Face foram pedidos na tela do app e seguidos até o fim: o `sd_xl_base_1.0.safetensors` em cerca de 9 minutos e o `sdxl_lightning_4step.safetensors` em cerca de 11 minutos (este com o processador ocupado gerando uma imagem). O app mostrou o tamanho e o espaço livre antes, o andamento, e o modelo novo na lista e em Criar mídia ao terminar. O SHA-256 de cada arquivo gravado é igual ao que o Hugging Face publica. Cancelar pelo app um download desses no meio apagou o arquivo parcial (`.baixando`) da pasta de checkpoints.
 - O motivo da 0.8.2: nesse Mac, o download pelo endereço feito com o `fetch` do Node trazia o arquivo a cerca de 1 MB/s, enquanto o `curl` e o módulo `https` do Node traziam o mesmo arquivo a cerca de 7 MB/s, na mesma rede e na mesma hora. A 0.8.2 baixa com o módulo `https`. No Windows (Node 24.13.1) o `fetch` não era lento: medido no mesmo dia, naquele computador, com um `.safetensors` de 334,6 MB do Hugging Face pelo `teste-locais.mjs`, o download levou 20,2 segundos com a ponte 0.8.1 e 17,7 segundos com a 0.8.2, contra 36,9 segundos do `curl`, um depois do outro; a diferença entre as duas versões cabe na variação da rede. A lentidão foi vista só no Mac com o Node 26.13, e não se sabe se a causa é a versão do Node ou o macOS.
 - No Mac com processador Intel, no mesmo dia e pelo app: a lista do Ollama 0.40.16 (qwen3:1.7b e gemma3:4b) e uma pergunta de texto respondida pelo qwen3:1.7b. O ComfyUI roda ali só no processador (`--cpu`): o PyTorch recusa a aceleração da Apple (MPS) em Mac com Intel. Uma imagem 16:9 com o sd_xl_base_1.0 (25 passos) levou cerca de 40 segundos por passo, 17 minutos e 47 segundos no ComfyUI, e chegou ao app, que esperou o tempo todo mostrando o passo. Com o sdxl_lightning_4step (os 6 passos que a ponte usa para nomes com `lightning`), 190 segundos, e a imagem chegou ao app. Não conferido nesse Mac: a pergunta com foto, parar uma resposta no meio, baixar pelo nome no Ollama, remover um modelo e cancelar uma imagem no meio.
+- A pesquisa de modelos (0.9.0): conferida em 10/11/2026 nesse mesmo Mac, de dois jeitos. Pelo `teste-locais.mjs`, contra os sites de verdade: a pesquisa do Ollama (`qwen` trouxe a família Qwen, o texto vazio trouxe 14 modelos e um nome inventado voltou vazio); as variantes do qwen3 (nove, com a 1.7b marcada como instalada) e do gemma3; o nome que não existe e o nome inválido (400 com a frase); a pesquisa de imagem (`juggernaut`, `sdxl`, `dreamshaper`, `realistic vision` e o texto vazio); os arquivos do RunDiffusion/Juggernaut-XL-v9 (um, de 7,11 GB) e do ByteDance/SDXL-Lightning (quatro, com o de 4 passos marcado como instalado); e um repositório que não existe e repositórios só com LoRA ou refinador (400 com a frase). E pelo app do iPhone (no simulador), pelo transmissor: as sugestões ao abrir; a lista mudando enquanto o nome é escrito (`qw`, depois `qwen3`); a página de variantes com o tamanho e o aviso de que a 1.7b já está no computador; a confirmação com o tamanho exato e o espaço livre; um download do qwen3:0.6b começado pela pesquisa e cancelado logo depois (o Ollama ficou com os dois modelos de antes, sem pedaços); a pesquisa de imagem (`jugg`), a página de arquivos e a confirmação de 7,11 GB, recusada; o endereço https escrito no campo da pesquisa, com a confirmação de 6,94 GB, recusada; o nome escrito com a etiqueta (`qwen3:0.6b`), que mostra a família e a opção de baixar o nome escrito; e o nome que não existe. Não conferido: um download do ComfyUI começado pela pesquisa e levado até o fim, a leitura da tela pelo VoiceOver, um iPhone de verdade e a pesquisa numa ponte de Windows.
 
 ## Listar
 
@@ -22,7 +23,7 @@ Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, 
 
 ```json
 { "servidores": [
-  { "id": "ollama", "nome": "Ollama", "tipo": "ollama", "baixa": "nome", "remove": true,
+  { "id": "ollama", "nome": "Ollama", "tipo": "ollama", "baixa": "nome", "remove": true, "pesquisa": true,
     "modelos": [
       { "id": "gemma3:4b", "nome": "gemma3:4b", "tipo": "texto",
         "imagem": true, "raciocinio": false,
@@ -34,6 +35,7 @@ Todos os endereços abaixo pedem `Authorization: Bearer <chave de pareamento>`, 
 - Um servidor ligado sem nenhum modelo aparece com `"modelos": []`.
 - `id` do servidor: `ollama`, `lmstudio`, `llamacpp`, `jan`, `comfyui`, ou `config1`, `config2`… para os do `config.json`. O app guarda e devolve esse `id`; nunca manda endereço de servidor.
 - `baixa` diz como se baixa um modelo novo nesse servidor: `"nome"` (o app pede o nome do modelo, como no Ollama: `gemma3:4b`), `"endereco"` (o app pede o endereço https do arquivo do modelo, como no ComfyUI) ou `null` (não dá para baixar por aqui). `remove` diz se dá para remover um modelo desse servidor.
+- `pesquisa` (0.9.0) diz se dá para pesquisar modelos para baixar nesse servidor (veja "Pesquisar um modelo"). Campo ausente ou `false`: o app pede o nome ou o endereço escrito à mão, como antes.
 - `tipo` do modelo: `"texto"` (serve para conversar) ou `"imagem"` (só gera imagem; não entra na lista de modelos de conversa). Um modelo de imagem traz também `proporcoes`, a lista de proporções que o app pode oferecer (`"1:1"`, `"4:3"`, `"3:4"`, `"16:9"`, `"9:16"`); nele `contexto` vem `null`.
 - `imagem`: o modelo aceita imagem junto da pergunta.
 - `raciocinio`: o modelo pode devolver raciocínio separado do texto.
@@ -87,6 +89,51 @@ Pedido grande: o corpo de um pedido do celular não pode passar de umas centenas
 ## Cancelar
 
 `DELETE /ponte/locais/conversa/<id>` → `{ "ok": true }`. Para a geração no servidor.
+
+## Pesquisar um modelo (0.9.0)
+
+Serve para a pessoa achar o modelo pelo nome, com sugestões enquanto escreve, em vez de digitar o nome exato ou colar um endereço. Só em servidor com `"pesquisa": true`.
+
+`POST /ponte/locais/pesquisar`
+
+```json
+{ "servidor": "ollama", "texto": "qwen" }
+```
+
+```json
+{ "servidor": "ollama", "texto": "qwen", "resultados": [
+  { "id": "qwen3", "nome": "qwen3",
+    "descricao": "Qwen3 is the latest generation of large language models in Qwen series…",
+    "detalhe": "0.6b, 1.7b, 4b, 8b, 14b, 30b, 32b, 235b · raciocina · 43,1 mi de downloads",
+    "imagem": false, "raciocinio": true, "downloads": 43077266 } ] }
+```
+
+- `texto` é o que a pessoa escreveu até agora (até 80 letras). Vazio devolve os modelos que o site mostra primeiro. O app pode chamar a cada pausa na digitação; a ponte guarda cada resposta por 10 minutos.
+- `resultados` vem na ordem do site, até 30. Lista vazia quer dizer que nada combinou. `id` é o que o app manda a `/opcoes`; `nome` é o que aparece na tela.
+- `descricao` vem do site (em inglês, no Ollama) e pode vir vazia. `detalhe` é uma linha curta pronta para mostrar. `imagem` e `raciocinio` têm o mesmo sentido da lista de modelos. `downloads` é um número, ou `null`.
+- No Ollama, a ponte lê a página pública de pesquisa do site (`ollama.com/search`), porque o Ollama não tem uma API de pesquisa. Se o texto trouxer a etiqueta da variante (`qwen3:0.6b`), a ponte pesquisa só o nome, que é o que o site conhece. Ficam de fora os modelos que só rodam na nuvem do Ollama e os de vetores. Se o site mudar a página, a pesquisa volta vazia (a ponte anota isso no registro dela) e o nome escrito à mão continua valendo.
+- No ComfyUI, a pesquisa usa a API pública do Hugging Face, entre os modelos de texto para imagem, dos mais baixados para os menos. Só entram repositórios abertos, da família Stable Diffusion (1.x, 2.x e XL), com pelo menos um arquivo `.safetensors` de modelo inteiro na raiz. Ficam de fora LoRA, ControlNet, VAE, modelos de outras famílias (Flux, Qwen Image, SD3…), que o fluxo de imagem da ponte não sabe rodar a partir de um arquivo só, e os repositórios que o Hugging Face marca como conteúdo adulto. O que a pesquisa não sugere continua entrando pelo endereço do arquivo.
+- Erro: 400 com `{ "erro": "…" }`, frase pronta (computador sem internet, site fora do ar).
+
+Escolhido um resultado, o app pergunta o que dá para baixar dele:
+
+`POST /ponte/locais/opcoes`
+
+```json
+{ "servidor": "ollama", "modelo": "qwen3" }
+```
+
+```json
+{ "servidor": "ollama", "modelo": "qwen3", "opcoes": [
+  { "nome": "qwen3:1.7b", "alvo": "qwen3:1.7b", "tamanho": 1400000000, "detalhe": "contexto 40K · texto", "instalado": true },
+  { "nome": "qwen3:4b", "alvo": "qwen3:4b", "tamanho": 2500000000, "detalhe": "contexto 256K · texto", "instalado": false } ] }
+```
+
+- `modelo` é o `id` de um resultado da pesquisa. No Ollama as opções são as variantes do modelo (`qwen3:4b`); no ComfyUI são os arquivos de modelo inteiro do repositório (acima de 1,3 GB).
+- `alvo` é o que o app manda, sem mexer, a `/consultar` e a `/baixar`: como `modelo` num servidor com `"baixa": "nome"`, como `endereco` num servidor com `"baixa": "endereco"`.
+- `tamanho` em bytes, ou `null`. No Ollama é o número arredondado que o site mostra; o tamanho exato e o espaço livre vêm de `/consultar`, que o app chama antes de confirmar o download.
+- `instalado` diz se essa opção já está no computador. `detalhe` pode vir vazio.
+- Nome que não existe, repositório fechado ou sem arquivo de modelo inteiro: 400 com a frase.
 
 ## Baixar um modelo (0.8.0)
 
@@ -189,4 +236,4 @@ Em `~/.elizium-ponte/config.json`, no computador:
 
 ## Testar no computador, sem celular
 
-`node teste-locais.mjs lista` (e `consultar`, `baixar`, `remover`, `imagem`; o começo do arquivo mostra como) chama a mesma parte da ponte direto, contra os servidores ligados no computador.
+`node teste-locais.mjs lista` (e `pesquisar`, `opcoes`, `consultar`, `baixar`, `remover`, `imagem`; o começo do arquivo mostra como) chama a mesma parte da ponte direto, contra os servidores ligados no computador.

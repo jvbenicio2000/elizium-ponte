@@ -2,6 +2,10 @@
 // contra os servidores de verdade que estiverem ligados aqui (Ollama, ComfyUI…). Usa o mesmo config.json da ponte.
 //
 //   node teste-locais.mjs lista
+//   node teste-locais.mjs pesquisar ollama qwen                (modelos para baixar; sem texto, os mais conhecidos)
+//   node teste-locais.mjs opcoes ollama qwen3                  (as variantes de um resultado, com o tamanho)
+//   node teste-locais.mjs pesquisar comfyui juggernaut
+//   node teste-locais.mjs opcoes comfyui RunDiffusion/Juggernaut-XL-v9
 //   node teste-locais.mjs consultar ollama gemma3:270m
 //   node teste-locais.mjs consultar comfyui https://…/modelo.safetensors
 //   node teste-locais.mjs baixar ollama gemma3:270m            (acompanha até o fim; Ctrl+C cancela o download)
@@ -39,6 +43,8 @@ const [action, server, what, ...rest] = process.argv.slice(2);
 const target = server === "comfyui" || /^https:/.test(what ?? "") ? { servidor: server, endereco: what } : { servidor: server, modelo: what };
 
 if (action === "lista") show(await call("GET", ""));
+else if (action === "pesquisar") show(await call("POST", "/pesquisar", { servidor: server, texto: [what, ...rest].filter(Boolean).join(" ") }));
+else if (action === "opcoes") show(await call("POST", "/opcoes", { servidor: server, modelo: what }));
 else if (action === "consultar") show(await call("POST", "/consultar", target));
 else if (action === "remover") show(await call("POST", "/remover", { servidor: server, modelo: what }));
 else if (action === "baixar") {
@@ -84,7 +90,7 @@ else if (action === "baixar") {
     }
   }
 } else {
-  console.log("Uso: node teste-locais.mjs lista | consultar | baixar | remover | imagem   (veja o começo deste arquivo)");
+  console.log("Uso: node teste-locais.mjs lista | pesquisar | opcoes | consultar | baixar | remover | imagem   (veja o começo deste arquivo)");
 }
 // Dá tempo de o cancelamento chegar ao servidor antes de sair.
 if (cancelAfter > 0) await new Promise((ok) => setTimeout(ok, 3000));

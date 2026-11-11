@@ -9,6 +9,8 @@
 //   POST   /ponte/locais/conversa                            começa uma resposta → { id }
 //   GET    /ponte/locais/conversa/<id>?depois=N&espera=20    pedaços novos da resposta
 //   DELETE /ponte/locais/conversa/<id>                       cancela
+//   POST   /ponte/locais/pesquisar                           modelos para baixar, pelo que o usuário escreveu
+//   POST   /ponte/locais/opcoes                              o que dá para baixar de um resultado da pesquisa
 //   POST   /ponte/locais/consultar                           tamanho de um modelo antes de baixar
 //   POST   /ponte/locais/baixar                              começa a baixar um modelo → { id }
 //   GET    /ponte/locais/baixar                              downloads em andamento e os que acabaram há pouco
@@ -245,11 +247,11 @@ export function createLocais({ config = {}, log = () => {} }) {
   }
 
   const listers = { ollama: ollamaModels, lmstudio: lmStudioModels, openai: openAIModels, comfyui: comfyModels };
-  /** Como o app pede um modelo novo a este servidor: pelo nome, por um endereço, ou não pede (null). */
+  /** Como o app pede um modelo novo a este servidor: pelo nome, por um endereço, ou não pede (null). E se dá para pesquisar. */
   async function abilities(s) {
-    if (s.tipo === "ollama") return { baixa: "nome", remove: true };
-    if (s.tipo === "comfyui") { const ok = (await comfyFolders(s)).length > 0; return { baixa: ok ? "endereco" : null, remove: ok }; }
-    return { baixa: null, remove: false };
+    if (s.tipo === "ollama") return { baixa: "nome", remove: true, pesquisa: true };
+    if (s.tipo === "comfyui") { const ok = (await comfyFolders(s)).length > 0; return { baixa: ok ? "endereco" : null, remove: ok, pesquisa: ok }; }
+    return { baixa: null, remove: false, pesquisa: false };
   }
   async function discover() {
     const found = await Promise.all(servers.map(async (s) => {
@@ -546,6 +548,196 @@ export function createLocais({ config = {}, log = () => {} }) {
       return { servidor: s.id, modelo: info.nome, tamanho: info.tamanho, livre: await freeSpace(folder), instalado: existsSync(join(folder, info.nome)) };
     }
     throw new Error(`O ${s.nome} não deixa baixar modelos por aqui.`);
+  }
+
+  // ---- Pesquisar modelos para baixar ------------------------------------------------------------------
+  //
+  // O Ollama não tem uma API de pesquisa: a ponte lê a página pública de pesquisa do site (ollama.com/search) e a
+  // página do modelo (ollama.com/library/<nome>). Se o site mudar essas páginas, a pesquisa volta vazia e o app
+  // continua aceitando o nome escrito à mão. No ComfyUI a pesquisa usa a API pública do Hugging Face.
+  // A ponte só abre esses dois sites; o que o app escreve entra na pesquisa como texto, nunca como endereço.
+
+  const HF = "https://huggingface.co";
+  const searchCache = new Map();   // chave → { quando, valor }
+  async function remembered(key, make) {
+    const hit = searchCache.get(key);
+    if (hit && Date.now() - hit.quando < 10 * 60000) return hit.valor;
+    const valor = await make();
+    if (searchCache.size >= 300) searchCache.delete(searchCache.keys().next().value);
+    searchCache.set(key, { quando: Date.now(), valor });
+    return valor;
+  }
+  /** Abre uma página de um dos sites da pesquisa. Devolve null quando ela não existe (404, ou os códigos de "missing"). */
+  async function sitePage(url, site, missing = [404]) {
+    let r;
+    try { r = await fetch(url, { headers: { "user-agent": "elizium-ponte" }, signal: AbortSignal.timeout(12000) }); }
+    catch { throw new Error(`Este computador não conseguiu abrir o ${site}. Confira a internet do computador.`); }
+    if (missing.includes(r.status)) return null;
+    if (!r.ok) throw new Error(`O ${site} respondeu ${r.status} à pesquisa. Tente de novo daqui a pouco.`);
+    try { return await r.text(); } catch { throw new Error(`O ${site} demorou demais para responder. Tente de novo.`); }
+  }
+  const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+  const unescapeHTML = (t) => t.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (all, e) => {
+    if (e[0] !== "#") return ENTITIES[e.toLowerCase()] ?? all;
+    const n = /^#x/i.test(e) ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+    return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : all;
+  });
+  const plainText = (html) => unescapeHTML(html.replace(/<[^>]*>/g, " ")).replace(/\s+/g, " ").trim();
+  const countText = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(".", ",").replace(",0", "")} mi de downloads`
+    : n >= 1000 ? `${Math.round(n / 1000)} mil downloads` : n === 1 ? "1 download" : `${n} downloads`);
+
+  /** Tamanhos de modelo como o site do Ollama escreve (1.7b, 270m, e2b). A contagem de downloads usa maiúscula (6.2M). */
+  const SIZE_TAG = /^(e?\d+(\.\d+)?[mb]|\d+x\d+(\.\d+)?b)$/;
+  /** Os modelos de uma página de pesquisa do Ollama. Lê pelo conteúdo, não pelas classes, que mudam a cada versão do site. */
+  function ollamaResults(html) {
+    const out = [], seen = new Set();
+    for (const block of html.split(/<li\b/i).slice(1)) {
+      const name = /href="\/library\/([A-Za-z0-9][A-Za-z0-9._-]*)"/.exec(block)?.[1];
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const spans = [...block.matchAll(/<span\b[^>]*>([^<]*)<\/span>/gi)].map((m) => unescapeHTML(m[1]).trim()).filter(Boolean);
+      const marks = spans.map((t) => t.toLowerCase());
+      // Modelos que só rodam na nuvem do Ollama não têm o que baixar; os de vetores não conversam.
+      if (marks.includes("cloud") && !marks.some((t) => /^\d+ tags?$/.test(t))) continue;
+      if (marks.includes("embedding")) continue;
+      const tamanhos = spans.filter((t) => SIZE_TAG.test(t));
+      const downloads = Number(/title="([\d,.]+) downloads?"/i.exec(block)?.[1]?.replace(/[,.]/g, "")) || null;
+      const imagem = marks.includes("vision"), raciocinio = marks.includes("thinking");
+      out.push({
+        id: name, nome: name, descricao: plainText(/<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(block)?.[1] ?? "").slice(0, 300),
+        detalhe: [tamanhos.join(", "), imagem ? "vê imagem" : "", raciocinio ? "raciocina" : "", downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
+        imagem, raciocinio, downloads,
+      });
+    }
+    return out;
+  }
+  async function ollamaSearch(texto) {
+    const html = await sitePage(`https://ollama.com/search${texto ? `?q=${encodeURIComponent(texto)}` : ""}`, "site do Ollama");
+    const found = ollamaResults(html ?? "");
+    if (!found.length && !/data-result-count="0"/.test(html ?? "")) log("A página de pesquisa do Ollama veio sem modelos que eu saiba ler; o site pode ter mudado.");
+    return found;
+  }
+
+  const UNITS = { kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
+  const INPUTS = { text: "texto", image: "imagem", audio: "áudio", video: "vídeo" };
+  /** As variantes de um modelo, como a página dele no site do Ollama mostra: nome com a etiqueta, tamanho e contexto. */
+  function ollamaVariants(html, name) {
+    const out = new Map();
+    for (const part of html.split(`href="/library/${name}:`).slice(1)) {
+      const tag = /^([A-Za-z0-9._-]+)"/.exec(part)?.[1];
+      if (!tag || /cloud/i.test(tag)) continue;
+      const full = `${name}:${tag}`;
+      if (out.get(full)?.tamanho) continue;
+      const text = plainText(part.slice(part.indexOf(">") + 1, 4000));
+      const size = /(\d+(?:\.\d+)?)\s?(KB|MB|GB|TB)\b/i.exec(text);
+      const context = /(\d+(?:\.\d+)?[KM]?)\s+context/i.exec(text)?.[1];
+      const input = (/context window\s*·\s*([^·]+?)\s*·/i.exec(text)?.[1] ?? "").split(/[,\s]+/).filter(Boolean)
+        .map((w) => INPUTS[w.toLowerCase()] ?? w.toLowerCase()).slice(0, 4);
+      out.set(full, {
+        nome: full, alvo: full, tamanho: size ? Math.round(Number(size[1]) * UNITS[size[2].toLowerCase()]) : null,
+        detalhe: [context ? `contexto ${context}` : "", input.join(", ")].filter(Boolean).join(" · "),
+      });
+    }
+    return [...out.values()].slice(0, 40);
+  }
+  async function ollamaOptions(name) {
+    const html = await sitePage(`https://ollama.com/library/${name}`, "site do Ollama");
+    if (html === null) throw unknownOllama(name);
+    const found = ollamaVariants(html, name);
+    if (found.length) return found;
+    log(`A página do modelo ${name} no site do Ollama veio sem variantes que eu saiba ler; o site pode ter mudado.`);
+    return [{ nome: name, alvo: name, tamanho: null, detalhe: "" }];
+  }
+
+  /** Arquivo que parece um modelo inteiro (checkpoint), e não uma peça: LoRA, VAE, ControlNet, codificador de texto. */
+  const NOT_CHECKPOINT = /lora|unet|vae|clip|t5|text_encoder|controlnet|adapter|embedding|diffusion_pytorch_model|inpaint|refiner/i;
+  const checkpointFile = (f) => typeof f === "string" && !f.includes("/") && /\.safetensors$/i.test(f) && !NOT_CHECKPOINT.test(f)
+    && f.length <= 150 && !f.startsWith(".") && /^[A-Za-z0-9._ \-()]+$/.test(f);
+  const OTHER_BASE = /flux|qwen|z-image|krea|wan|hunyuan|stable-diffusion-3|sd3|pixart|kolors|lumina|hidream|chroma|cascade|auraflow|sana/;
+  /**
+   * A pesquisa só sugere modelos da família Stable Diffusion (1.x, 2.x e XL), que é a que o fluxo de imagem da ponte
+   * sabe rodar a partir de um arquivo só. Outros modelos continuam entrando pelo endereço do arquivo.
+   */
+  function imageFamily(m) {
+    const tags = (Array.isArray(m.tags) ? m.tags : []).map((t) => String(t).toLowerCase());
+    const bases = tags.filter((t) => t.startsWith("base_model:"));
+    if (tags.some((t) => ["lora", "controlnet", "gguf"].includes(t)) || bases.some((t) => OTHER_BASE.test(t))) return null;
+    if (tags.some((t) => ["stable-diffusion-xl", "sdxl", "diffusers:stablediffusionxlpipeline"].includes(t))
+        || bases.some((t) => /xl|illustrious|noobai|animagine|pony/.test(t)) || /xl/i.test(m.id)) return "Stable Diffusion XL";
+    return tags.some((t) => ["stable-diffusion", "stable-diffusion-diffusers", "diffusers:stablediffusionpipeline",
+                             "diffusers:latentconsistencymodelpipeline"].includes(t))
+        || bases.some((t) => /stable-diffusion|sd-turbo/.test(t)) ? "Stable Diffusion" : null;
+  }
+  const HF_REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
+  /** Conteúdo adulto fica fora das sugestões (o próprio Hugging Face marca esses modelos). */
+  const adult = (m) => (Array.isArray(m.tags) ? m.tags : []).some((t) => /^(not-for-all-audiences|nsfw)$/i.test(String(t))) || /nsfw|porn|hentai/i.test(m.id);
+  async function imageSearch(texto) {
+    const q = new URLSearchParams({ pipeline_tag: "text-to-image", sort: "downloads", direction: "-1", limit: "50", full: "true" });
+    if (texto) q.set("search", texto);
+    let list;
+    try { list = JSON.parse((await sitePage(`${HF}/api/models?${q}`, "Hugging Face")) ?? "[]"); } catch (e) {
+      if (e instanceof SyntaxError) throw new Error("O Hugging Face respondeu algo que não entendi. Tente de novo daqui a pouco.");
+      throw e;
+    }
+    const out = [];
+    for (const m of Array.isArray(list) ? list : []) {
+      if (typeof m?.id !== "string" || !HF_REPO.test(m.id) || m.gated || m.private || adult(m)) continue;
+      const family = imageFamily(m);
+      const files = (Array.isArray(m.siblings) ? m.siblings : []).filter((f) => checkpointFile(f?.rfilename)).length;
+      if (!family || !files) continue;
+      const downloads = Number(m.downloads) || null;
+      out.push({
+        id: m.id, nome: m.id, descricao: "",
+        detalhe: [family, files === 1 ? "1 arquivo" : `${files} arquivos`, downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
+        imagem: false, raciocinio: false, downloads,
+      });
+    }
+    return out.slice(0, 30);
+  }
+  async function imageOptions(id) {
+    // O Hugging Face responde 401 tanto a um modelo que não existe quanto a um modelo fechado.
+    const body = await sitePage(`${HF}/api/models/${id}?blobs=true`, "Hugging Face", [401, 403, 404]);
+    if (body === null) throw new Error(`Não achei ${id} aberto no Hugging Face.`);
+    let m;
+    try { m = JSON.parse(body); } catch { throw new Error("O Hugging Face respondeu algo que não entendi. Tente de novo daqui a pouco."); }
+    if (m?.gated || m?.private) throw new Error("Esse modelo pede login no Hugging Face. Escolha um modelo aberto.");
+    const repo = typeof m?.id === "string" && HF_REPO.test(m.id) ? m.id : id;
+    // Um modelo inteiro tem mais de 1,3 GB; menor que isso é peça (LoRA, VAE). Sem tamanho informado, fica.
+    const files = (Array.isArray(m?.siblings) ? m.siblings : []).filter((f) => checkpointFile(f?.rfilename) && !(Number(f.size) < 1.3e9)).slice(0, 40);
+    if (!files.length) throw new Error("Não achei um arquivo de modelo inteiro nesse repositório.");
+    return files.map((f) => ({ nome: f.rfilename, alvo: `${HF}/${repo}/resolve/main/${encodeURIComponent(f.rfilename)}`, tamanho: Number(f.size) || null, detalhe: "" }));
+  }
+
+  async function search(j) {
+    const s = findServer(j?.servidor);
+    const texto = (typeof j.texto === "string" ? j.texto : "").trim().replace(/\s+/g, " ").slice(0, 80);
+    const key = texto.toLowerCase();
+    if (s.tipo === "ollama") {
+      // "qwen3:0.6b" é o modelo qwen3 com a etiqueta 0.6b; a pesquisa do site só conhece o nome, sem a etiqueta.
+      const nome = texto.split(":")[0].trim();
+      return { servidor: s.id, texto, resultados: await remembered(`ollama|${nome.toLowerCase()}`, () => ollamaSearch(nome)) };
+    }
+    if (s.tipo === "comfyui") return { servidor: s.id, texto, resultados: await remembered(`imagem|${key}`, () => imageSearch(texto)) };
+    throw new Error(`O ${s.nome} não tem pesquisa de modelos por aqui.`);
+  }
+  /** O que dá para baixar de um resultado da pesquisa. O "alvo" de cada opção é o que o app manda a /consultar e /baixar. */
+  async function options(j) {
+    const s = findServer(j?.servidor);
+    const modelo = typeof j.modelo === "string" ? j.modelo.trim() : "";
+    if (s.tipo === "ollama") {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(modelo)) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
+      const list = await remembered(`ollama-opcoes|${modelo}`, () => ollamaOptions(modelo));
+      let have = new Set();
+      try { have = new Set(((await getJSON(`${s.url}/api/tags`)).models ?? []).map((m) => m.name ?? m.model)); } catch {}
+      return { servidor: s.id, modelo, opcoes: list.map((o) => ({ ...o, instalado: have.has(ollamaTagged(o.alvo)) })) };
+    }
+    if (s.tipo === "comfyui") {
+      if (!HF_REPO.test(modelo) || modelo.includes("..")) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
+      const list = await remembered(`imagem-opcoes|${modelo}`, () => imageOptions(modelo));
+      const folder = (await comfyFolders(s))[0];
+      return { servidor: s.id, modelo, opcoes: list.map((o) => ({ ...o, instalado: folder ? existsSync(join(folder, o.nome)) : false })) };
+    }
+    throw new Error(`O ${s.nome} não tem pesquisa de modelos por aqui.`);
   }
 
   const downloads = new Map();   // id → { id, servidor, modelo, estado, total, baixado, n, fim, erro, waiters, abort, avisado, terminou }
@@ -934,6 +1126,12 @@ export function createLocais({ config = {}, log = () => {} }) {
 
     if (path === "/consultar" && req.method === "POST") {
       try { return json(res, 200, await consult(parse(body))); } catch (e) { return json(res, 400, { erro: e.message }); }
+    }
+    if (path === "/pesquisar" && req.method === "POST") {
+      try { return json(res, 200, await search(parse(body))); } catch (e) { return json(res, 400, { erro: e.message }); }
+    }
+    if (path === "/opcoes" && req.method === "POST") {
+      try { return json(res, 200, await options(parse(body))); } catch (e) { return json(res, 400, { erro: e.message }); }
     }
     if (path === "/baixar" && req.method === "POST") {
       try { return json(res, 200, { id: await startDownload(parse(body)) }); } catch (e) { return json(res, 400, { erro: e.message }); }

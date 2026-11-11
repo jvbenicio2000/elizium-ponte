@@ -76,13 +76,14 @@ Se o Claude Code estiver instalado no computador, o app pode usar ele no lugar d
 - Política da empresa: as regras `deny` viram regras de bloqueio do Claude Code, cada pedido de permissão é conferido contra a política e o modo Liberar tudo deixa de existir. Para proibir o Claude Code no computador, ponha `"claudeCode": false` na política.
 - Outros modelos funcionam pior que os Claude nas ferramentas do Claude Code; recursos como pensamento estendido e cache não passam pelo tradutor.
 
-## Modelos do computador (0.7.0; baixar, remover e imagem na 0.8.0)
+## Modelos do computador (0.7.0; baixar, remover e imagem na 0.8.0; pesquisa na 0.9.0)
 
 O app pode conversar, na aba Conversas, com um modelo que roda neste computador, sem chave: a ponte procura o Ollama (porta 11434), o LM Studio (1234), o llama.cpp (8080) e o Jan (1337), mostra ao app os modelos de cada um e faz a chamada em 127.0.0.1. Modelos que enxergam imagem recebem a imagem junto da pergunta. A resposta chega ao celular por consulta longa, porque a resposta ao vivo desses servidores não atravessa o transmissor nem o túnel.
 
 - O app escolhe um servidor da lista da ponte; nunca manda endereço. Outros servidores entram pelo `config.json` do computador.
 - A ponte não guarda as conversas.
 - Baixar e remover modelos pelo celular (0.8.0): no Ollama, pelo nome do modelo na biblioteca; no ComfyUI, pelo endereço https de um arquivo `.safetensors`, que vai para a pasta de checkpoints. A ponte informa o tamanho e o espaço livre antes, e o download segue no computador mesmo com o app fechado. Da 0.8.1 em diante, cancelar um download do Ollama apaga também os pedaços que ele deixava no disco. Da 0.8.2 em diante, o download pelo endereço usa o módulo `https` do Node, porque o `fetch` trazia o arquivo cerca de sete vezes mais devagar num Mac.
+- Pesquisar modelos pelo celular (0.9.0): o app mostra sugestões enquanto a pessoa escreve o nome, e depois as variantes com o tamanho. No Ollama, a ponte lê a página pública de pesquisa do site do Ollama (ele não tem uma API de pesquisa; se o site mudar, vale o nome escrito à mão). No ComfyUI, usa a API do Hugging Face e só sugere modelos abertos da família Stable Diffusion, sem os marcados como conteúdo adulto; os outros continuam entrando pelo endereço.
 - Gerar imagem (0.8.0): se o ComfyUI estiver ligado (porta 8188), os checkpoints dele aparecem como modelos de imagem e o app gera a imagem neste computador. A imagem pronta vai para o celular e não fica guardada aqui.
 - O contrato completo, para quem escreve o app, está em [LOCAIS.md](LOCAIS.md).
 
