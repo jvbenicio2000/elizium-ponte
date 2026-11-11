@@ -14,7 +14,11 @@ diga() { printf '\n%s\n' "$*"; }
 falha() { printf '\nErro: %s\n' "$*" >&2; exit 1; }
 pergunta() {  # lê do teclado mesmo quando o script veio por "curl | bash"
   local resposta=""
-  if { : < /dev/tty; } 2>/dev/null; then read -r -p "$1 " resposta < /dev/tty 2>/dev/null || true; fi
+  # A pergunta vai escrita direto no terminal: o "read -p" a escreve na saída de erro, que aqui é descartada.
+  if { : < /dev/tty; } 2>/dev/null; then
+    printf '%s ' "$1" > /dev/tty
+    read -r resposta < /dev/tty 2>/dev/null || true
+  fi
   printf '%s' "$resposta"
 }
 
