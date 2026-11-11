@@ -88,4 +88,6 @@ else if (action === "baixar") {
 }
 // Dá tempo de o cancelamento chegar ao servidor antes de sair.
 if (cancelAfter > 0) await new Promise((ok) => setTimeout(ok, 3000));
-process.exit(0);
+// Sem process.exit na hora: no Windows, sair com as conexões do fetch ainda abertas derruba o Node com um erro
+// do libuv. O programa termina sozinho quando elas fecham; o prazo abaixo é só para não ficar preso.
+setTimeout(() => process.exit(0), 10000).unref();

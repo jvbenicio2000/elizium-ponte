@@ -28,7 +28,7 @@
 
 import { randomBytes, randomInt } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
-import { rename, statfs, unlink } from "node:fs/promises";
+import { readdir, rename, statfs, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -531,6 +531,26 @@ export function createLocais({ config = {}, log = () => {} }) {
   const downloadView = (d) => ({ id: d.id, servidor: d.servidor, modelo: d.modelo, estado: d.estado, total: d.total, baixado: d.baixado,
                                  proximo: d.n, fim: d.fim, erro: d.erro });
 
+  /**
+   * O Ollama guarda o que já baixou de um download interrompido (arquivos "sha256-…-partial" na pasta dele,
+   * com o tamanho inteiro reservado) para continuar depois. Quem cancelou pelo celular não vai continuar:
+   * esses arquivos saem, senão ocupam o disco sem aparecer em lista nenhuma. Só os das camadas deste download.
+   */
+  async function dropPartials(digests) {
+    const heads = digests.filter((x) => /^sha256:[0-9a-f]{64}$/.test(x)).map((x) => `${x.replace(":", "-")}-partial`);
+    if (!heads.length) return;
+    const dir = join(ollamaDir(), "blobs");
+    // O Ollama leva um instante para largar os arquivos (no Windows eles ficam presos até lá).
+    for (let pass = 0; pass < 6; pass++) {
+      await sleep(pass ? 1500 : 700);
+      let names;
+      try { names = await readdir(dir); } catch { return; }
+      const left = names.filter((n) => heads.some((h) => n === h || n.startsWith(`${h}-`)));
+      if (!left.length) return;
+      for (const n of left) await unlink(join(dir, n)).catch(() => {});
+    }
+  }
+
   async function pullOllama(d, s) {
     const known = await ollamaSize(d.modelo);
     roomFor(known, await ollamaFree(s));
@@ -541,21 +561,32 @@ export function createLocais({ config = {}, log = () => {} }) {
     });
     if (!r.ok) throw await failure(r, s);
     const layers = new Map();
+    d.camadas = layers;
     let done = false;
-    for await (const line of lines(r.body)) {
-      let j;
-      try { j = JSON.parse(line); } catch { continue; }
-      if (j.error) throw (/file does not exist|not found|manifest unknown/i.test(j.error) ? unknownOllama(d.modelo) : new Error(`${s.nome}: ${String(j.error).slice(0, 300)}`));
-      const before = d.estado;
-      if (j.digest && Number.isFinite(j.total)) {
-        layers.set(j.digest, { total: j.total, completed: Number(j.completed) || 0 });
-        let total = 0, got = 0;
-        for (const l of layers.values()) { total += l.total; got += Math.min(l.completed, l.total); }
-        d.total = Math.max(d.total, total); d.baixado = got; d.estado = "baixando";
-      } else if (/^verifying|^writing|^removing/.test(j.status ?? "")) {
-        d.estado = "conferindo"; if (d.total) d.baixado = d.total;
-      } else if (j.status === "success") done = true;
-      bump(d, d.estado !== before);
+    try {
+      for await (const line of lines(r.body)) {
+        let j;
+        try { j = JSON.parse(line); } catch { continue; }
+        if (j.error) throw (/file does not exist|not found|manifest unknown/i.test(j.error) ? unknownOllama(d.modelo) : new Error(`${s.nome}: ${String(j.error).slice(0, 300)}`));
+        const before = d.estado;
+        if (j.digest && Number.isFinite(j.total)) {
+          layers.set(j.digest, { total: j.total, completed: Number(j.completed) || 0 });
+          let total = 0, got = 0;
+          for (const l of layers.values()) { total += l.total; got += Math.min(l.completed, l.total); }
+          d.total = Math.max(d.total, total); d.baixado = got; d.estado = "baixando";
+        } else if (/^verifying|^writing|^removing/.test(j.status ?? "")) {
+          d.estado = "conferindo"; if (d.total) d.baixado = d.total;
+        } else if (j.status === "success") done = true;
+        bump(d, d.estado !== before);
+      }
+    } catch (e) {
+      // Cancelado pelo celular: o que ficou pela metade sai do disco. Queda de outro tipo fica, para continuar depois.
+      if (d.abort.signal.aborted && isLocal(s.url)) {
+        // Uma camada que outro download em andamento também está baixando fica.
+        const shared = (x) => [...downloads.values()].some((o) => o !== d && !o.fim && !o.cancelado && o.camadas?.has(x));
+        await dropPartials([...layers.keys()].filter((x) => !shared(x))).catch(() => {});
+      }
+      throw e;
     }
     if (!done) throw new Error(`O ${s.nome} parou o download antes do fim. Tente de novo: ele continua de onde parou.`);
   }
