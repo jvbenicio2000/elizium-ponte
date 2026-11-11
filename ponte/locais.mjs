@@ -29,9 +29,10 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { createWriteStream, existsSync, statSync } from "node:fs";
 import { readdir, rename, statfs, unlink } from "node:fs/promises";
+import { get as httpsGet } from "node:https";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { Readable, Transform } from "node:stream";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
 const STEPS = [4096, 8192, 16384, 32768, 65536, 131072];
@@ -503,6 +504,32 @@ export function createLocais({ config = {}, log = () => {} }) {
     return { nome: fileName(r, u, wanted), tamanho: Number(r.headers.get("content-length")) || Number(r.headers.get("x-linked-size")) || null };
   }
 
+  /**
+   * Abre o arquivo de um endereço https para baixar, seguindo os redirecionamentos (só para outro endereço https).
+   * Devolve o que o refuseAnswer espera (status, ok, headers.get) e o corpo como stream do Node.
+   * Não usa o fetch do Node: medido em 10/11/2026 (Node 26.13, macOS), o fetch trazia o arquivo a 1 MB/s e o
+   * módulo https, como o curl, a 7 MB/s, na mesma rede e na mesma hora.
+   */
+  function openFile(address, signal, hops = 0) {
+    return new Promise((ok, no) => {
+      const u = new URL(address);
+      if (u.protocol !== "https:") return no(new Error("O site mandou o download para um endereço sem https. Use outro endereço."));
+      const req = httpsGet(u, { signal, headers: { "accept-encoding": "identity", "user-agent": "elizium-ponte" } }, (res) => {
+        const to = res.headers.location;
+        if ([301, 302, 303, 307, 308].includes(res.statusCode) && to) {
+          res.resume();
+          if (hops >= 10) return no(new Error("O site redirecionou o download vezes demais. Use o endereço direto do arquivo."));
+          let next;
+          try { next = new URL(to, u).href; } catch { return no(new Error("O site mandou o download para um endereço inválido.")); }
+          return ok(openFile(next, signal, hops + 1));
+        }
+        const head = (name) => { const v = res.headers[name.toLowerCase()]; return Array.isArray(v) ? v.join(", ") : v ?? null; };
+        ok({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, headers: { get: head }, body: res });
+      });
+      req.on("error", no);
+    });
+  }
+
   async function consult(j) {
     const s = findServer(j?.servidor);
     if (s.tipo === "ollama") {
@@ -597,15 +624,24 @@ export function createLocais({ config = {}, log = () => {} }) {
     const final = join(folder, d.modelo), temp = `${final}.baixando`;
     if (existsSync(final)) throw new Error(`Já existe um modelo chamado ${d.modelo} neste computador.`);
     let r;
-    try { r = await fetch(d.endereco, { redirect: "follow", signal: d.abort.signal }); }
-    catch (e) { if (d.abort.signal.aborted) throw e; throw new Error("Este computador não conseguiu abrir esse endereço. Confira o endereço e a internet do computador."); }
-    refuseAnswer(r);
-    d.total = Number(r.headers.get("content-length")) || d.total;
-    roomFor(d.total, await freeSpace(folder));
+    try { r = await openFile(d.endereco, d.abort.signal); }
+    catch (e) {
+      if (d.abort.signal.aborted) throw e;
+      if (/^O site /.test(e?.message ?? "")) throw e;
+      throw new Error("Este computador não conseguiu abrir esse endereço. Confira o endereço e a internet do computador.");
+    }
+    try {
+      refuseAnswer(r);
+      d.total = Number(r.headers.get("content-length")) || d.total;
+      roomFor(d.total, await freeSpace(folder));
+    } catch (e) {
+      r.body.destroy();
+      throw e;
+    }
     bump(d);
     const count = new Transform({ transform(chunk, _enc, next) { d.baixado += chunk.length; bump(d, false); next(null, chunk); } });
     try {
-      await pipeline(Readable.fromWeb(r.body), count, createWriteStream(temp), { signal: d.abort.signal });
+      await pipeline(r.body, count, createWriteStream(temp), { signal: d.abort.signal });
       if (d.total && d.baixado !== d.total) throw new Error("O download veio incompleto. Tente de novo.");
       d.estado = "conferindo"; bump(d);
       await rename(temp, final);
