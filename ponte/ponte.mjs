@@ -19,7 +19,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { open as openFile, readFile, readdir, stat } from "node:fs/promises";
 import { createServer as createHTTPServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
@@ -32,7 +32,7 @@ import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.9.2";
+const VERSION = "0.10.0";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -124,12 +124,14 @@ function policy() {
     if (policyCache.file !== file || policyCache.mtime !== mtime) {
       const p = JSON.parse(readFileSync(file, "utf8"));
       const regras = (Array.isArray(p.regras) ? p.regras : []).filter((r) => r && r.permission && r.pattern && ["allow", "deny", "ask"].includes(r.action));
-      policyCache = { file, mtime, value: { empresa: String(p.empresa ?? ""), administrador: String(p.administrador ?? ""), regras, sistema: file === systemPolicy } };
+      policyCache = { file, mtime, value: { empresa: String(p.empresa ?? ""), administrador: String(p.administrador ?? ""), regras, sistema: file === systemPolicy,
+                                           ...(p.claudeCode === false ? { claudeCode: false } : {}), ...(p.memorias === false ? { memorias: false } : {}) } };
     }
     return policyCache.value;
   } catch {
     // Política ilegível: fecha tudo em vez de liberar.
-    return { empresa: "?", administrador: "", regras: [{ permission: "*", pattern: "*", action: "deny" }], sistema: file === systemPolicy, erro: "Política ilegível" };
+    return { empresa: "?", administrador: "", regras: [{ permission: "*", pattern: "*", action: "deny" }], sistema: file === systemPolicy, erro: "Política ilegível",
+             claudeCode: false, memorias: false };
   }
 }
 const sameRule = (a, b) => a.permission === b.permission && a.pattern === b.pattern && a.action === b.action;
@@ -366,6 +368,93 @@ function officeText(buf, ext) {
   }).join("\n\n");
 }
 
+// Memórias dos agentes (0.10.0): os textos que o Claude Code e o OpenCode guardam neste computador sobre a pessoa e
+// os projetos (instruções e memória). O app mostra a lista, a pessoa escolhe no celular quais entram nas conversas
+// e só então o app pede o texto de cada uma. Só leitura. A política da empresa fecha com "memorias": false.
+const MEM_LETRAS_ARQUIVO = 24000;
+const MEM_LETRAS_FONTE = 80000;
+const MEM_ARQUIVOS = 40;
+const MEM_FONTES = 60;
+
+async function memoryFile(path, nome) {
+  try {
+    const st = await stat(path);
+    if (!st.isFile() || st.size > 2_000_000) return null;
+    const full = (await readFile(path, "utf8")).replace(/\u0000/g, "").trim();
+    if (!full) return null;
+    return { nome, texto: full.slice(0, MEM_LETRAS_ARQUIVO), cortado: full.length > MEM_LETRAS_ARQUIVO, alterado: Math.round(st.mtimeMs) };
+  } catch {
+    return null;
+  }
+}
+
+/** A pasta de verdade de um projeto do Claude Code (o nome da pasta do histórico troca tudo por "-"). */
+async function claudeProjectFolder(dir, key) {
+  try {
+    const first = (await readdir(dir)).find((n) => n.endsWith(".jsonl"));
+    if (first) {
+      const fh = await openFile(join(dir, first), "r");
+      try {
+        const { buffer, bytesRead } = await fh.read(Buffer.alloc(65536), 0, 65536, 0);
+        const m = buffer.toString("utf8", 0, bytesRead).match(/"cwd":"((?:[^"\\]|\\.)*)"/);
+        if (m) {
+          const cwd = JSON.parse(`"${m[1]}"`);
+          const rel = relative(homedir(), cwd);
+          return rel === "" ? "pasta do usuário" : rel.startsWith("..") || isAbsolute(rel) ? cwd : rel;
+        }
+      } finally {
+        await fh.close();
+      }
+    }
+  } catch {}
+  return key.replace(/^-+/, "").split("-").filter(Boolean).pop() ?? key;
+}
+
+/** Todas as fontes de memória deste computador, cada uma com seus arquivos já cortados no limite. */
+async function agentMemories() {
+  const fontes = [];
+  const add = (id, agente, nome, arquivos) => {
+    const list = [];
+    let room = MEM_LETRAS_FONTE;
+    for (const a of arquivos.filter(Boolean)) {
+      if (room <= 0 || list.length >= MEM_ARQUIVOS) break;
+      if (a.texto.length > room) { a.texto = a.texto.slice(0, room); a.cortado = true; }
+      room -= a.texto.length;
+      list.push(a);
+    }
+    if (list.length) fontes.push({ id, agente, nome, alterado: Math.max(...list.map((a) => a.alterado)), letras: list.reduce((n, a) => n + a.texto.length, 0), arquivos: list });
+  };
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const projeto = basename(projectDir);
+  add("claude:instrucoes", "claude", "Instruções do Claude Code", [await memoryFile(join(claudeDir, "CLAUDE.md"), "CLAUDE.md")]);
+  add("opencode:instrucoes", "opencode", "Instruções do OpenCode", [await memoryFile(join(homedir(), ".config", "opencode", "AGENTS.md"), "AGENTS.md")]);
+  // A pasta do projeto pode estar numa pasta que o Mac ainda não liberou: aí fica de fora, sem travar.
+  let projectOpen = true;
+  try { await conferirPastaDoMac(projectDir); } catch { projectOpen = false; }
+  if (projectOpen) {
+    add("claude:projeto", "claude", `Instruções do projeto ${projeto} para o Claude Code`,
+      [await memoryFile(join(projectDir, "CLAUDE.md"), "CLAUDE.md"), await memoryFile(join(projectDir, ".claude", "CLAUDE.md"), ".claude/CLAUDE.md")]);
+    add("opencode:projeto", "opencode", `Instruções do projeto ${projeto} para o OpenCode`, [await memoryFile(join(projectDir, "AGENTS.md"), "AGENTS.md")]);
+  }
+  let keys = [];
+  try { keys = (await readdir(join(claudeDir, "projects"), { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch {}
+  const memorias = [];
+  for (const key of keys) {
+    const dir = join(claudeDir, "projects", key);
+    let names = [];
+    try { names = (await readdir(join(dir, "memory"))).filter((n) => /\.md$/i.test(n)); } catch { continue; }
+    if (!names.length) continue;
+    names.sort((a, b) => (a === "MEMORY.md" ? -1 : b === "MEMORY.md" ? 1 : a.localeCompare(b)));   // o índice primeiro
+    const files = [];
+    for (const n of names.slice(0, MEM_ARQUIVOS)) files.push(await memoryFile(join(dir, "memory", n), n));
+    const before = fontes.length;
+    add(`claude:memoria:${key}`, "claude", `Memória do Claude Code: ${await claudeProjectFolder(dir, key)}`, files);
+    if (fontes.length > before) memorias.push(fontes.pop());
+  }
+  memorias.sort((a, b) => b.alterado - a.alterado);   // as mexidas por último vêm primeiro
+  return [...fontes, ...memorias].slice(0, MEM_FONTES);
+}
+
 const bridge = createHTTPServer(async (req, res) => {
   if (!authorized(req)) return json(res, 401, { erro: "Chave de pareamento inválida." });
   const url = new URL(req.url, "http://ponte");
@@ -373,7 +462,7 @@ const bridge = createHTTPServer(async (req, res) => {
   if (url.pathname === "/ponte/info") {
     const p = policy();
     return json(res, 200, { ponte: VERSION, computador: name, sistema: platform(), pasta: projectDir, ultimoEvento: lastN,
-                            agentes: ["opencode", "claude"], claude: claudeCode.info(), locais: true,
+                            agentes: ["opencode", "claude"], claude: claudeCode.info(), locais: true, memorias: p?.memorias !== false,
                             politica: p ? { empresa: p.empresa, administrador: p.administrador, regras: p.regras, sistema: p.sistema } : null });
   }
   if (url.pathname === "/ponte/eventos") {
@@ -404,6 +493,19 @@ const bridge = createHTTPServer(async (req, res) => {
     for await (const c of req) chunks.push(c);
     try {
       return await locais.handle(req, res, url, Buffer.concat(chunks), json);
+    } catch (e) {
+      return json(res, 500, { erro: e.message });
+    }
+  }
+  if (url.pathname === "/ponte/memorias" && req.method === "GET") {
+    const p = policy();
+    if (p?.memorias === false) return json(res, 403, { erro: `A política de ${p.empresa} não libera as memórias dos agentes neste computador.` });
+    try {
+      const fontes = await agentMemories();
+      const id = url.searchParams.get("fonte");
+      if (id === null) return json(res, 200, { fontes: fontes.map(({ arquivos, ...f }) => ({ ...f, arquivos: arquivos.length })) });
+      const fonte = fontes.find((f) => f.id === id);
+      return fonte ? json(res, 200, { fonte }) : json(res, 404, { erro: "Essa memória não existe mais neste computador." });
     } catch (e) {
       return json(res, 500, { erro: e.message });
     }

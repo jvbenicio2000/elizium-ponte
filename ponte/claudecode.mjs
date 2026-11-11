@@ -10,6 +10,9 @@
 // - Modelos de outros provedores passam pelo tradutor (gateway.mjs), com as chaves do OpenCode.
 // - A política da empresa vale aqui também: regras "deny" viram regras de bloqueio do Claude Code e
 //   cada pedido de permissão é conferido contra ela; com política não existe "liberar tudo".
+// - Trocar de modelo no meio da sessão: o Claude Code guarda as instruções da primeira mensagem e repete as
+//   mesmas depois, com o nome do primeiro modelo. A ponte pede as instruções de novo a cada mensagem e diz
+//   ao modelo de outro provedor quem ele é (0.10.0).
 
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -109,6 +112,47 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
       catch { version = ""; }
     }
     return { instalado: true, versao: version, aplicado: appliedGlobal() };
+  }
+
+  /** Roda o Claude Code só para ler o que ele escreve (ajuda, erro de opção); não manda pedido nenhum. */
+  function claudeSays(args) {
+    const viaCmd = isWindows && /\.cmd$/i.test(claude);
+    try {
+      return execFileSync(viaCmd ? "cmd.exe" : claude, viaCmd ? ["/d", "/s", "/c", claude, ...args] : args,
+        { encoding: "utf8", timeout: 20000, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      return String(e.stdout ?? "") + String(e.stderr ?? "");
+    }
+  }
+
+  let options = null;
+  /** Quais opções novas este Claude Code conhece (as dos antigos não têm todas). Confere uma vez só. */
+  function known() {
+    if (options) return options;
+    const help = claudeSays(["--help"]);
+    if (!help.includes("--model")) return { snapshot: false, file: false };   // não respondeu: tenta de novo na próxima
+    // A opção do arquivo não aparece na ajuda; com um arquivo que não existe, quem conhece reclama do arquivo
+    // e quem não conhece reclama da opção, e nenhum dos dois chega a mandar pedido.
+    const probe = claudeSays(["-p", "--append-system-prompt-file", join(runDir, "nao-existe.txt"), "x"]);
+    options = { snapshot: help.includes("--system-prompt-snapshot"), file: /file not found/i.test(probe) };
+    return options;
+  }
+
+  /**
+   * O que vai no fim das instruções do Claude Code: quem é o modelo, quando ele não é da conta do Claude Code
+   * (as instruções do Claude Code dizem a qualquer modelo que ele é o Claude), e o texto que o app mandar.
+   */
+  function extraInstructions(providerID, modelID, fromApp) {
+    const parts = [];
+    if (providerID !== "claude") {
+      const who = `o modelo ${modelID}, do provedor ${providerID}`;
+      parts.push(`Quem responde agora é ${who}, rodando dentro do Claude Code.`
+        + (/claude/i.test(modelID) ? "" : " Você não é o Claude nem um modelo da Anthropic.")
+        + ` Se perguntarem quem é você ou qual modelo está respondendo, diga que é ${who}.`
+        + " As falas anteriores desta sessão podem ter vindo de outro modelo.");
+    }
+    if (typeof fromApp === "string" && fromApp.trim()) parts.push(fromApp.trim().slice(0, 8000));
+    return parts.join("\n\n");
   }
 
   const historyFile = (id) => {
@@ -323,6 +367,23 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     args.push("--settings", settingsFile);
 
     const viaCmd = isWindows && /\.cmd$/i.test(claude);
+    // Sem isto, o Claude Code repete na sessão inteira as instruções da primeira mensagem, com o nome do
+    // primeiro modelo, e o modelo novo responde como se fosse o antigo.
+    const can = known();
+    if (can.snapshot) args.push("--system-prompt-snapshot", "off");
+    const extra = extraInstructions(providerID, modelID, body.system);
+    const extraFile = join(runDir, `${id}.txt`);
+    if (extra) {
+      if (can.file) {
+        writeFileSync(extraFile, extra);
+        args.push("--append-system-prompt-file", extraFile);
+      } else if (!viaCmd) {
+        args.push("--append-system-prompt", extra);
+      } else {
+        // Pelo cmd.exe do Windows só passa texto simples: sem aspas, sem sinais que o cmd interpreta, sem acentos.
+        args.push("--append-system-prompt", extra.normalize("NFD").replace(/[^A-Za-z0-9 .,:;\/_@-]/g, "").slice(0, 2000));
+      }
+    }
     const child = spawn(viaCmd ? "cmd.exe" : claude, viaCmd ? ["/d", "/s", "/c", claude, ...args] : args,
                         { cwd: projectDir, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     const run = { child, aborted: false, stderr: "", result: null };
@@ -353,6 +414,7 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
       running.delete(id);
       for (const [k, a] of asks) if (a.sessionID === id) asks.delete(k);
       rmSync(settingsFile, { force: true });
+      rmSync(extraFile, { force: true });
       const r = run.result;
       const failed = !run.aborted && (code !== 0 || r?.is_error);
       if (failed) {
