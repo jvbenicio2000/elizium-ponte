@@ -19,19 +19,20 @@
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { createServer as createHTTPServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { createServer } from "node:net";
 import { homedir, hostname, platform } from "node:os";
-import { basename, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import qrcode from "qrcode-terminal";
 import { loadIdentity, newPairingCode, startRelay } from "./transmissor.mjs";
 import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.9.0";
+const VERSION = "0.9.1";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -243,21 +244,49 @@ const json = (res, status, body) => {
 // Arquivos que o iPhone manda salvar (relatórios de conversa), em pedaços para caber nas mensagens do transmissor.
 // Só grava dentro da pasta do usuário e nunca sobrescreve: acrescenta " (2)", " (3)"…
 const uploads = new Map();   // envio → { partes, total, criado }
-function receivePiece({ envio, pasta, nome, parte, total, dados, destino }) {
+
+// No Mac, as pastas Documentos, Mesa e Transferências só abrem depois que a pessoa responde, na tela do computador,
+// a uma pergunta do sistema, e até lá a chamada que toca a pasta fica parada. A ponte toca a pasta fora da linha
+// principal: quem espera a resposta é só essa sonda, e um arquivo que chegue antes dela é recusado com a explicação,
+// em vez de travar a ponte inteira.
+const PASTAS_DO_MAC = { Documents: "Documentos", Desktop: "Mesa", Downloads: "Transferências" };
+const sondas = new Map();   // pasta → { estado: "esperando" | "liberada" | "negada", fim }
+function sondar(raiz) {
+  let s = sondas.get(raiz);
+  if (s && s.estado !== "negada") return s;   // a negada é tentada de novo: a pessoa pode ter liberado nos Ajustes
+  s = { estado: "esperando" };
+  s.fim = readdir(raiz).then(() => "liberada", (e) => (e.code === "EPERM" || e.code === "EACCES" ? "negada" : "liberada"))
+    .then((estado) => { s.estado = estado; });
+  sondas.set(raiz, s);
+  return s;
+}
+async function conferirPastaDoMac(dir) {
+  if (platform() !== "darwin") return;
+  const [primeira] = relative(homedir(), dir).split(sep);
+  if (!Object.hasOwn(PASTAS_DO_MAC, primeira)) return;
+  const nome = PASTAS_DO_MAC[primeira];
+  const s = sondar(join(homedir(), primeira));
+  await Promise.race([s.fim, new Promise((ok) => setTimeout(ok, 1500))]);
+  if (s.estado === "esperando") throw new Error(`O Mac está perguntando, na tela dele, se a ponte pode usar a pasta ${nome}. Escolha Permitir no computador e mande o arquivo de novo.`);
+  if (s.estado === "negada") throw new Error(`O Mac não deixa a ponte usar a pasta ${nome}. Libere em Ajustes do Sistema, Privacidade e Segurança, Arquivos e Pastas, e mande o arquivo de novo.`);
+}
+
+async function receivePiece({ envio, pasta, nome, parte, total, dados, destino }) {
   if (typeof envio !== "string" || typeof nome !== "string" || !Number.isInteger(parte) || !Number.isInteger(total)
       || total < 1 || total > 400 || parte < 0 || parte >= total || typeof dados !== "string") throw new Error("Pedido de arquivo inválido.");
-  for (const [k, u] of uploads) if (Date.now() - u.criado > 10 * 60 * 1000) uploads.delete(k);
-  const u = uploads.get(envio) ?? { partes: new Map(), total, criado: Date.now() };
-  uploads.set(envio, u);
-  u.partes.set(parte, Buffer.from(dados, "base64"));
-  if (u.partes.size < u.total) return { recebido: u.partes.size, total: u.total };
-  uploads.delete(envio);
   const home = homedir();
   // Anexos da conversa ficam numa pasta fixa, que o modelo consegue ler (as regras de leitura não bloqueiam).
   if (destino === "anexo") pasta = join(home, "Documents", "Elízium", "Anexos");
   const dir = resolve(isAbsolute(pasta ?? "") ? pasta : join(home, pasta || "Documents/Elízium"));
   const rel = relative(home, dir);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("A pasta precisa ficar dentro da pasta do usuário deste computador.");
+  await conferirPastaDoMac(dir);   // antes de aceitar o pedaço: o aviso chega no primeiro, não depois do arquivo inteiro
+  for (const [k, u] of uploads) if (Date.now() - u.criado > 10 * 60 * 1000) uploads.delete(k);
+  const u = uploads.get(envio) ?? { partes: new Map(), total, criado: Date.now() };
+  uploads.set(envio, u);
+  u.partes.set(parte, Buffer.from(dados, "base64"));
+  if (u.partes.size < u.total) return { recebido: u.partes.size, total: u.total };
+  uploads.delete(envio);
   mkdirSync(dir, { recursive: true });
   const clean = basename(nome).replace(/[\/\\?%*:|"<>\x00-\x1f]/g, "-").trim() || "Elizium";
   const ext = extname(clean);
@@ -383,7 +412,7 @@ const bridge = createHTTPServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
     try {
-      return json(res, 200, receivePiece(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
+      return json(res, 200, await receivePiece(JSON.parse(Buffer.concat(chunks).toString("utf8"))));
     } catch (e) {
       return json(res, 400, { erro: e.message });
     }
@@ -442,6 +471,17 @@ async function enforcePolicy(id, p) {
 }
 const bridgePort = await freePort(ocPort + 1);
 await new Promise((ok) => bridge.listen(bridgePort, "127.0.0.1", ok));
+
+// A pergunta do Mac sobre a pasta Documentos vem já na partida, com a pessoa ainda no computador, e não quando o
+// primeiro arquivo chegar do celular.
+if (platform() === "darwin") {
+  const s = sondar(join(homedir(), "Documents"));
+  setTimeout(() => {
+    if (s.estado !== "esperando") return;
+    console.log("O Mac está perguntando na tela se a ponte pode usar a pasta Documentos, onde ficam os arquivos que o celular manda. Escolha Permitir.");
+    s.fim.then(() => console.log(s.estado === "liberada" ? "Pasta Documentos liberada." : "O Mac negou a pasta Documentos: os arquivos do celular não vão ser gravados nela."));
+  }, 2000);
+}
 
 const name = hostname().replace(/\.local$/, "");
 

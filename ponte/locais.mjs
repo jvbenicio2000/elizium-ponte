@@ -453,7 +453,9 @@ export function createLocais({ config = {}, log = () => {} }) {
     const full = ollamaTagged(name);
     const cut = full.lastIndexOf(":");
     const parts = full.slice(0, cut).split("/");
-    if (parts.length > 2 || parts[0].includes(".")) return null;      // hf.co/… e outros registros: o Ollama resolve na hora
+    // Com três partes o nome traz o registro (hf.co/pessoa/modelo): o Ollama resolve na hora. Um ponto no nome não
+    // quer dizer registro: llama3.2 e qwen3.8 são nomes da própria biblioteca.
+    if (parts.length > 2) return null;
     let r;
     try {
       r = await fetch(`https://registry.ollama.ai/v2/${parts.length === 1 ? `library/${parts[0]}` : parts.join("/")}/manifests/${full.slice(cut + 1)}`,
@@ -555,6 +557,8 @@ export function createLocais({ config = {}, log = () => {} }) {
   // O Ollama não tem uma API de pesquisa: a ponte lê a página pública de pesquisa do site (ollama.com/search) e a
   // página do modelo (ollama.com/library/<nome>). Se o site mudar essas páginas, a pesquisa volta vazia e o app
   // continua aceitando o nome escrito à mão. No ComfyUI a pesquisa usa a API pública do Hugging Face.
+  // A pesquisa do Ollama traz também os modelos publicados por quem tem conta no site (pessoa/modelo), que ficam em
+  // ollama.com/<pessoa>/<modelo>: variações que a biblioteca não tem, como as "abliterated". O Ollama não confere esses.
   // A ponte só abre esses dois sites; o que o app escreve entra na pesquisa como texto, nunca como endereço.
 
   const HF = "https://huggingface.co";
@@ -592,7 +596,9 @@ export function createLocais({ config = {}, log = () => {} }) {
   function ollamaResults(html) {
     const out = [], seen = new Set();
     for (const block of html.split(/<li\b/i).slice(1)) {
-      const name = /href="\/library\/([A-Za-z0-9][A-Za-z0-9._-]*)"/.exec(block)?.[1];
+      const link = /href="\/([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)"/.exec(block);
+      const comunidade = !!link && link[1] !== "library";
+      const name = !link ? "" : comunidade ? `${link[1]}/${link[2]}` : link[2];
       if (!name || seen.has(name)) continue;
       seen.add(name);
       const spans = [...block.matchAll(/<span\b[^>]*>([^<]*)<\/span>/gi)].map((m) => unescapeHTML(m[1]).trim()).filter(Boolean);
@@ -605,8 +611,9 @@ export function createLocais({ config = {}, log = () => {} }) {
       const imagem = marks.includes("vision"), raciocinio = marks.includes("thinking");
       out.push({
         id: name, nome: name, descricao: plainText(/<p\b[^>]*>([\s\S]*?)<\/p>/i.exec(block)?.[1] ?? "").slice(0, 300),
-        detalhe: [tamanhos.join(", "), imagem ? "vê imagem" : "", raciocinio ? "raciocina" : "", downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
-        imagem, raciocinio, downloads,
+        detalhe: [comunidade ? "da comunidade" : "", tamanhos.join(", "), imagem ? "vê imagem" : "", raciocinio ? "raciocina" : "",
+          downloads ? countText(downloads) : ""].filter(Boolean).join(" · "),
+        imagem, raciocinio, downloads, comunidade,
       });
     }
     return out;
@@ -620,10 +627,12 @@ export function createLocais({ config = {}, log = () => {} }) {
 
   const UNITS = { kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12 };
   const INPUTS = { text: "texto", image: "imagem", audio: "áudio", video: "vídeo" };
+  /** Nome de um modelo no site do Ollama: da biblioteca (gemma3) ou de quem o publicou (pessoa/modelo). */
+  const OLLAMA_PAGE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,99})?$/;
   /** As variantes de um modelo, como a página dele no site do Ollama mostra: nome com a etiqueta, tamanho e contexto. */
   function ollamaVariants(html, name) {
     const out = new Map();
-    for (const part of html.split(`href="/library/${name}:`).slice(1)) {
+    for (const part of html.split(`href="/${name.includes("/") ? name : `library/${name}`}:`).slice(1)) {
       const tag = /^([A-Za-z0-9._-]+)"/.exec(part)?.[1];
       if (!tag || /cloud/i.test(tag)) continue;
       const full = `${name}:${tag}`;
@@ -631,7 +640,7 @@ export function createLocais({ config = {}, log = () => {} }) {
       const text = plainText(part.slice(part.indexOf(">") + 1, 4000));
       const size = /(\d+(?:\.\d+)?)\s?(KB|MB|GB|TB)\b/i.exec(text);
       const context = /(\d+(?:\.\d+)?[KM]?)\s+context/i.exec(text)?.[1];
-      const input = (/context window\s*·\s*([^·]+?)\s*·/i.exec(text)?.[1] ?? "").split(/[,\s]+/).filter(Boolean)
+      const input = (/context window\s*[·•]\s*([^·•]+?)\s*[·•]/i.exec(text)?.[1] ?? "").split(/[,\s]+/).filter((w) => w && !/^input$/i.test(w))
         .map((w) => INPUTS[w.toLowerCase()] ?? w.toLowerCase()).slice(0, 4);
       out.set(full, {
         nome: full, alvo: full, tamanho: size ? Math.round(Number(size[1]) * UNITS[size[2].toLowerCase()]) : null,
@@ -641,7 +650,9 @@ export function createLocais({ config = {}, log = () => {} }) {
     return [...out.values()].slice(0, 40);
   }
   async function ollamaOptions(name) {
-    const html = await sitePage(`https://ollama.com/library/${name}`, "site do Ollama");
+    // Um modelo da comunidade costuma ter várias compressões e a página dele só mostra uma ou duas: a lista inteira
+    // está em /tags. Na biblioteca, a página do modelo já traz os tamanhos principais.
+    const html = await sitePage(`https://ollama.com/${name.includes("/") ? `${name}/tags` : `library/${name}`}`, "site do Ollama");
     if (html === null) throw unknownOllama(name);
     const found = ollamaVariants(html, name);
     if (found.length) return found;
@@ -725,7 +736,7 @@ export function createLocais({ config = {}, log = () => {} }) {
     const s = findServer(j?.servidor);
     const modelo = typeof j.modelo === "string" ? j.modelo.trim() : "";
     if (s.tipo === "ollama") {
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(modelo)) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
+      if (!OLLAMA_PAGE.test(modelo)) throw new Error("Nome de modelo inválido. Escolha um modelo da pesquisa.");
       const list = await remembered(`ollama-opcoes|${modelo}`, () => ollamaOptions(modelo));
       let have = new Set();
       try { have = new Set(((await getJSON(`${s.url}/api/tags`)).models ?? []).map((m) => m.name ?? m.model)); } catch {}

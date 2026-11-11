@@ -1,4 +1,4 @@
-# Modelos do computador: contrato da ponte (0.9.0)
+# Modelos do computador: contrato da ponte (0.9.1)
 
 Serve para o app usar um modelo que roda no computador pareado: conversar, na aba Conversas, com um modelo de texto (Ollama, LM Studio, llama.cpp, Jan ou outro servidor que fale a API de chat da OpenAI); gerar imagem com um modelo do ComfyUI; e, desde a 0.8.0, baixar e remover modelos do computador pelo celular, com pesquisa pelo nome desde a 0.9.0. Não há chave: a ponte chama o servidor em 127.0.0.1 e o app fala só com a ponte, com a chave de pareamento de sempre.
 
@@ -110,6 +110,7 @@ Serve para a pessoa achar o modelo pelo nome, com sugestões enquanto escreve, e
 
 - `texto` é o que a pessoa escreveu até agora (até 80 letras). Vazio devolve os modelos que o site mostra primeiro. O app pode chamar a cada pausa na digitação; a ponte guarda cada resposta por 10 minutos.
 - `resultados` vem na ordem do site, até 30. Lista vazia quer dizer que nada combinou. `id` é o que o app manda a `/opcoes`; `nome` é o que aparece na tela.
+- Desde a 0.9.1 a pesquisa do Ollama traz também os modelos que as pessoas publicam no site com a conta delas, e não só os da biblioteca do Ollama. Eles vêm com `"comunidade": true`, com `id` e `nome` na forma `pessoa/modelo` (por exemplo `huihui_ai/qwen3-abliterated`) e com `da comunidade` no começo do `detalhe`. É por aí que aparecem variações que a biblioteca não tem, como as `abliterated`. O Ollama não confere esses modelos; a ponte também não. Em ponte mais antiga o campo não vem.
 - `descricao` vem do site (em inglês, no Ollama) e pode vir vazia. `detalhe` é uma linha curta pronta para mostrar. `imagem` e `raciocinio` têm o mesmo sentido da lista de modelos. `downloads` é um número, ou `null`.
 - No Ollama, a ponte lê a página pública de pesquisa do site (`ollama.com/search`), porque o Ollama não tem uma API de pesquisa. Se o texto trouxer a etiqueta da variante (`qwen3:0.6b`), a ponte pesquisa só o nome, que é o que o site conhece. Ficam de fora os modelos que só rodam na nuvem do Ollama e os de vetores. Se o site mudar a página, a pesquisa volta vazia (a ponte anota isso no registro dela) e o nome escrito à mão continua valendo.
 - No ComfyUI, a pesquisa usa a API pública do Hugging Face, entre os modelos de texto para imagem, dos mais baixados para os menos. Só entram repositórios abertos, da família Stable Diffusion (1.x, 2.x e XL), com pelo menos um arquivo `.safetensors` de modelo inteiro na raiz. Ficam de fora LoRA, ControlNet, VAE, modelos de outras famílias (Flux, Qwen Image, SD3…), que o fluxo de imagem da ponte não sabe rodar a partir de um arquivo só, e os repositórios que o Hugging Face marca como conteúdo adulto. O que a pesquisa não sugere continua entrando pelo endereço do arquivo.
@@ -129,9 +130,9 @@ Escolhido um resultado, o app pergunta o que dá para baixar dele:
   { "nome": "qwen3:4b", "alvo": "qwen3:4b", "tamanho": 2500000000, "detalhe": "contexto 256K · texto", "instalado": false } ] }
 ```
 
-- `modelo` é o `id` de um resultado da pesquisa. No Ollama as opções são as variantes do modelo (`qwen3:4b`); no ComfyUI são os arquivos de modelo inteiro do repositório (acima de 1,3 GB).
+- `modelo` é o `id` de um resultado da pesquisa. No Ollama as opções são as variantes do modelo (`qwen3:4b`), tiradas da página dele no site; num modelo da comunidade (0.9.1) vêm da página de etiquetas dele, que traz todas as compressões (até 40); no ComfyUI são os arquivos de modelo inteiro do repositório (acima de 1,3 GB).
 - `alvo` é o que o app manda, sem mexer, a `/consultar` e a `/baixar`: como `modelo` num servidor com `"baixa": "nome"`, como `endereco` num servidor com `"baixa": "endereco"`.
-- `tamanho` em bytes, ou `null`. No Ollama é o número arredondado que o site mostra; o tamanho exato e o espaço livre vêm de `/consultar`, que o app chama antes de confirmar o download.
+- `tamanho` em bytes, ou `null`. No Ollama é o número arredondado que o site mostra; o tamanho exato e o espaço livre vêm de `/consultar`, que o app chama antes de confirmar o download. Até a 0.9.0, `/consultar` devolvia `tamanho` nulo para todo modelo do Ollama com ponto no nome (`qwen3.8`, `llama3.2`), porque tomava o ponto por endereço de outro registro; a 0.9.1 corrige.
 - `instalado` diz se essa opção já está no computador. `detalhe` pode vir vazio.
 - Nome que não existe, repositório fechado ou sem arquivo de modelo inteiro: 400 com a frase.
 

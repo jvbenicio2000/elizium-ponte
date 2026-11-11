@@ -112,6 +112,9 @@ UNIT
     loginctl enable-linger "$USER" 2>/dev/null || echo "(Para ligar antes do login, rode uma vez: sudo loginctl enable-linger $USER)"
   fi
   diga "A ponte está ligada e vai ligar sozinha nas próximas vezes."
+  if [ "$SO" = darwin ]; then
+    echo "Se o Mac perguntar se o node pode usar a pasta Documentos, escolha Permitir: é nela que ficam os arquivos que o celular manda."
+  fi
   sleep 8
   "$NODE_BIN" "$DESTINO/ponte.mjs" --codigo
   diga "Para ver o código de pareamento de novo: node $DESTINO/ponte.mjs --codigo"
