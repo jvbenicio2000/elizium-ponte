@@ -103,11 +103,52 @@ async function passThrough(req, res, body, t) {
     "anthropic-version": req.headers["anthropic-version"] ?? "2023-06-01",
   };
   if (official && req.headers["anthropic-beta"]) headers["anthropic-beta"] = req.headers["anthropic-beta"];
-  const r = await fetch(`${base}/v1/messages`, { method: "POST", headers, body: JSON.stringify({ ...body, model: t.model }) });
+  // A Anthropic entende as ferramentas adiadas do Claude Code; os outros que falam a API dela, não.
+  const sent = official ? body : plainTools(body);
+  const r = await fetch(`${base}/v1/messages`, { method: "POST", headers, body: JSON.stringify({ ...sent, model: t.model }) });
   const out = { "content-type": r.headers.get("content-type") ?? "application/json" };
   res.writeHead(r.status, out);
   if (r.body) for await (const c of r.body) res.write(c);
   res.end();
+}
+
+// --- Ferramentas adiadas ---
+//
+// O Claude Code não manda a descrição de todas as ferramentas a cada pedido: as menos usadas, e as dos servidores
+// MCP do computador, vão só pelo nome, e o modelo pede a que quiser pela ferramenta ToolSearch. A resposta dessa
+// busca não é texto: é um bloco "tool_reference" com o nome da ferramenta, e dali em diante ela vem na lista
+// marcada com defer_loading. Quem entende isso é a API da Anthropic. Para os outros provedores a ponte faz o
+// mesmo papel: a ferramenta adiada só aparece para o modelo depois que uma busca trouxe o nome dela, e o bloco
+// vira uma frase.
+
+/** Só existe para a API da Anthropic aceitar o pedido enquanto nenhuma ferramenta foi buscada. */
+const PLACEHOLDER = "DeferredToolPlaceholder";
+
+export function plainTools(b) {
+  const defined = new Set((b.tools ?? []).map((x) => x.name));
+  const loaded = new Set();
+  const messages = (b.messages ?? []).map((m) => {
+    if (!Array.isArray(m.content)) return m;
+    let changed = false;
+    const content = m.content.map((block) => {
+      if (block.type !== "tool_result" || !Array.isArray(block.content) || !block.content.some((x) => x.type === "tool_reference")) return block;
+      changed = true;
+      return { ...block, content: block.content.map((x) => {
+        if (x.type !== "tool_reference") return x;
+        if (!defined.has(x.tool_name)) return { type: "text", text: `Tool found: ${x.tool_name}.` };
+        loaded.add(x.tool_name);
+        return { type: "text", text: `Tool loaded: ${x.tool_name}. You can call it now.` };
+      }) };
+    });
+    return changed ? { ...m, content } : m;
+  });
+  const out = { ...b, messages };
+  if (b.tools) {
+    out.tools = b.tools.filter((x) => x.name !== PLACEHOLDER && (!x.defer_loading || loaded.has(x.name)))
+      .map(({ defer_loading, ...x }) => x);
+    if (!out.tools.length) { delete out.tools; delete out.tool_choice; }
+  }
+  return out;
 }
 
 // --- Anthropic → OpenAI ---
@@ -123,7 +164,8 @@ function cleanSchema(s) {
   return out;
 }
 
-export function toOpenAI(b, t) {
+export function toOpenAI(body, t) {
+  const b = plainTools(body);
   const messages = [];
   const system = typeof b.system === "string" ? b.system : (b.system ?? []).map((x) => x.text ?? "").join("\n\n");
   if (system) messages.push({ role: "system", content: system });

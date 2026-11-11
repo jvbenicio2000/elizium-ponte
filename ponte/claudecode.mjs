@@ -331,6 +331,12 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     };
   }
   const GATEWAY_KEYS = Object.keys(gatewayEnv("x", "y"));
+  // Apontado para um endereço que não é o da Anthropic, o Claude Code manda a cada pedido a descrição de todas as
+  // ferramentas dos servidores MCP do computador (num PC eram 220 mil tokens, mais do que cabe em quase todo
+  // modelo). Com isto ele manda só os nomes e o modelo busca a ferramenta que quiser; o tradutor entende a busca.
+  // Fica fora de GATEWAY_KEYS de propósito: com a conta do Claude Code essas chaves vão vazias, e esta não pode.
+  const TOOL_SEARCH = { ENABLE_TOOL_SEARCH: "true" };
+  const POINTED_KEYS = [...GATEWAY_KEYS, ...Object.keys(TOOL_SEARCH)];
 
   function start(id, body) {
     if (running.has(id)) throw new Error("O Claude Code ainda está trabalhando nesta sessão.");
@@ -355,7 +361,7 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
       args.push("--model", modelID === "padrao" ? "default" : modelID);
       settingsEnv = Object.fromEntries(GATEWAY_KEYS.map((k) => [k, ""]));
     } else {
-      settingsEnv = gatewayEnv(providerID, modelID);
+      settingsEnv = { ...gatewayEnv(providerID, modelID), ...TOOL_SEARCH };
       Object.assign(env, settingsEnv);
       args.push("--model", modelID);
     }
@@ -467,8 +473,12 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
   function applyGlobal(providerID, modelID) {
     const s = readSettings();
     s.env = s.env ?? {};
-    if (!appliedGlobal()) writeFileSync(backupFile, JSON.stringify(Object.fromEntries(GATEWAY_KEYS.map((k) => [k, s.env[k] ?? null]))));
-    Object.assign(s.env, gatewayEnv(providerID, modelID));
+    // Guarda só o que ainda não está guardado: trocar o modelo já aplicado não pode pôr no "antes" o que a ponte escreveu.
+    let before = {};
+    if (appliedGlobal()) { try { before = JSON.parse(readFileSync(backupFile, "utf8")); } catch {} }
+    for (const k of POINTED_KEYS) if (!(k in before)) before[k] = s.env[k] ?? null;
+    writeFileSync(backupFile, JSON.stringify(before));
+    Object.assign(s.env, gatewayEnv(providerID, modelID), TOOL_SEARCH);
     mkdirSync(configDir, { recursive: true });
     writeFileSync(userSettings, JSON.stringify(s, null, 2));
   }
@@ -477,7 +487,10 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     let before = {};
     try { before = JSON.parse(readFileSync(backupFile, "utf8")); } catch {}
     s.env = s.env ?? {};
-    for (const k of GATEWAY_KEYS) { if (before[k] == null) delete s.env[k]; else s.env[k] = before[k]; }
+    for (const k of POINTED_KEYS) {
+      if (!(k in before) && !GATEWAY_KEYS.includes(k)) continue;   // guardado por uma ponte antiga, que não mexia nesta
+      if (before[k] == null) delete s.env[k]; else s.env[k] = before[k];
+    }
     if (!Object.keys(s.env).length) delete s.env;
     writeFileSync(userSettings, JSON.stringify(s, null, 2));
     rmSync(backupFile, { force: true });
