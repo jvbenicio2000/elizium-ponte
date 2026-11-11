@@ -12,7 +12,8 @@
 //   cada pedido de permissão é conferido contra ela; com política não existe "liberar tudo".
 // - Trocar de modelo no meio da sessão: o Claude Code guarda as instruções da primeira mensagem e repete as
 //   mesmas depois, com o nome do primeiro modelo. A ponte pede as instruções de novo a cada mensagem e diz
-//   ao modelo de outro provedor quem ele é (0.10.0).
+//   ao modelo de outro provedor quem ele é (0.10.0). Na mensagem em que o modelo muda vai também um aviso junto
+//   da fala do usuário, porque um modelo pequeno copia do histórico o nome que o modelo anterior deu (0.10.2).
 
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -155,6 +156,23 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     return parts.join("\n\n");
   }
 
+  /**
+   * Aviso que vai junto da fala do usuário na mensagem em que o modelo da sessão muda. O histórico guarda o
+   * modelo anterior dizendo o próprio nome, e um modelo pequeno repete esse nome em vez de ler as instruções.
+   * O aviso fica no histórico do Claude Code (os modelos seguintes também leem) e não aparece no app.
+   */
+  const NOTE_HEAD = "<system-reminder>\nAviso da ponte Elízium";
+  function changeNote(id, providerID, modelID) {
+    const before = meta[id];
+    if (!before?.modelo || !historyFile(id)) return "";
+    if ((before.provedor ?? "claude") === providerID && before.modelo === modelID) return "";
+    const who = providerID !== "claude" ? `o modelo ${modelID}, do provedor ${providerID}`
+      : modelID === "padrao" ? "o modelo padrão da conta do Claude Code" : `o modelo ${modelID}, da conta do Claude Code`;
+    return `${NOTE_HEAD}, não do usuário: o modelo desta sessão mudou. A partir desta mensagem quem responde é ${who}. `
+      + "As respostas anteriores desta sessão vieram de outro modelo: se perguntarem quem é você ou qual modelo está "
+      + "respondendo, não repita o nome que elas deram. Não comente este aviso.\n</system-reminder>";
+  }
+
   const historyFile = (id) => {
     const direct = join(historyDir, `${id}.jsonl`);
     if (existsSync(direct)) return direct;
@@ -193,7 +211,7 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
           const part = tools.get(r.tool_use_id);
           if (part) { part.state.status = r.is_error ? "error" : "completed"; part.state.output = textOf(r.content).slice(0, 20000); }
         }
-        const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+        const text = blocks.filter((b) => b.type === "text" && !b.text?.startsWith(NOTE_HEAD)).map((b) => b.text).join("\n").trim();
         // Saídas de comandos internos e avisos do sistema não são falas do usuário.
         if (!text || text.startsWith("<") || j.toolUseResult) continue;
         cur = null;
@@ -246,7 +264,7 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     for (const j of readLines(file)) {
       if (j.type !== "user" || j.isMeta || j.isSidechain) continue;
       const c = j.message?.content;
-      const t = (typeof c === "string" ? c : (c ?? []).filter((b) => b.type === "text").map((b) => b.text).join(" ")).trim();
+      const t = (typeof c === "string" ? c : (c ?? []).filter((b) => b.type === "text" && !b.text?.startsWith(NOTE_HEAD)).map((b) => b.text).join(" ")).trim();
       if (t && !t.startsWith("<")) return t.slice(0, 60);
     }
     return null;
@@ -348,6 +366,8 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
     const modelID = body.model?.modelID ?? "padrao";
     let mode = MODES[body.modo] ?? "manual";
     if (p && mode === "bypassPermissions") mode = "manual";
+    // Antes de `meta[id]` receber o modelo novo, mais abaixo.
+    const note = changeNote(id, providerID, modelID);
 
     const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                   "--permission-prompt-tool", "stdio", "--permission-mode", mode];
@@ -434,7 +454,8 @@ export function createClaudeCode({ claude, projectDir, infoDir, isWindows, pushE
       ping("session.idle");
       ping("session.status", { status: { type: "idle" } });
     });
-    child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content: text } }) + "\n");
+    const content = note ? [{ type: "text", text: note }, { type: "text", text }] : text;
+    child.stdin.write(JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n");
   }
 
   /** Um pedido de permissão do Claude Code: confere a política e, se não for decidido aqui, pergunta ao iPhone. */

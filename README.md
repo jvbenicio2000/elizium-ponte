@@ -100,3 +100,11 @@ Com um modelo de outro provedor, o Claude Code mandava a cada pedido a descriç�
 - A ponte agora liga a busca de ferramentas do Claude Code (`ENABLE_TOOL_SEARCH=true`) sempre que o modelo vai pelo tradutor: as ferramentas pouco usadas e as dos servidores MCP vão só pelo nome, e o modelo busca a que precisar. No mesmo PC o pedido caiu para 16 ferramentas e cerca de 11 mil tokens.
 - O tradutor passou a entender essa busca. A resposta dela é um bloco `tool_reference`, que antes virava "(sem saída)"; agora vira uma frase com o nome da ferramenta, e a ferramenta buscada entra na lista do modelo a partir dali. A ferramenta `DeferredToolPlaceholder`, que só serve à API da Anthropic, não é mais mostrada aos outros modelos.
 - Vale também para o Claude Code do computador quando o app aponta ele para outro modelo: a variável vai junto para o `settings.json` e sai quando volta ao padrão.
+
+## Aviso na troca de modelo (0.10.2)
+
+Trocando de modelo no meio de uma sessão do Claude Code, o pedido já ia para o modelo novo e as instruções já diziam quem ele era, mas o histórico da sessão guarda o modelo anterior dizendo o próprio nome, e um modelo pequeno copiava esse nome em vez de ler as instruções: perguntado "qual modelo é você?", respondia com o nome do anterior.
+
+- Na mensagem em que o modelo (ou o provedor) da sessão muda, a ponte manda junto da fala do usuário um aviso curto: o modelo mudou, quem responde agora é tal modelo, e o nome dado nas respostas anteriores não deve ser repetido. Vale também na volta para a conta do Claude Code.
+- O aviso fica no histórico do Claude Code, para os modelos seguintes também lerem, e não aparece no app: a lista de mensagens e o título da sessão pulam esse bloco.
+- Sem troca de modelo, a fala do usuário vai como antes, sem nada junto.
