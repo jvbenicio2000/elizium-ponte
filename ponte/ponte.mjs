@@ -32,7 +32,7 @@ import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.10.3";
+const VERSION = "0.10.4";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -372,8 +372,8 @@ function officeText(buf, ext) {
 // os projetos (instruções e memória). O app mostra a lista, a pessoa escolhe no celular quais entram nas conversas
 // e só então o app pede o texto de cada uma. Só leitura. A política da empresa fecha com "memorias": false.
 const MEM_LETRAS_ARQUIVO = 24000;
-const MEM_LETRAS_FONTE = 80000;
-const MEM_ARQUIVOS = 40;
+const MEM_LETRAS_FONTE = 600000;
+const MEM_ARQUIVOS = 400;
 const MEM_FONTES = 60;
 
 async function memoryFile(path, nome) {
@@ -444,9 +444,14 @@ async function agentMemories() {
     let names = [];
     try { names = (await readdir(join(dir, "memory"))).filter((n) => /\.md$/i.test(n)); } catch { continue; }
     if (!names.length) continue;
-    names.sort((a, b) => (a === "MEMORY.md" ? -1 : b === "MEMORY.md" ? 1 : a.localeCompare(b)));   // o índice primeiro
+    // O índice primeiro, depois as mexidas por último: se a pasta passar do limite, quem fica de fora são as mais antigas.
+    const dated = [];
+    for (const n of names) {
+      try { dated.push({ n, t: (await stat(join(dir, "memory", n))).mtimeMs }); } catch {}
+    }
+    dated.sort((a, b) => (a.n === "MEMORY.md" ? -1 : b.n === "MEMORY.md" ? 1 : b.t - a.t || a.n.localeCompare(b.n)));
     const files = [];
-    for (const n of names.slice(0, MEM_ARQUIVOS)) files.push(await memoryFile(join(dir, "memory", n), n));
+    for (const { n } of dated.slice(0, MEM_ARQUIVOS)) files.push(await memoryFile(join(dir, "memory", n), n));
     const before = fontes.length;
     add(`claude:memoria:${key}`, "claude", `Memória do Claude Code: ${await claudeProjectFolder(dir, key)}`, files);
     if (fontes.length > before) memorias.push(fontes.pop());
