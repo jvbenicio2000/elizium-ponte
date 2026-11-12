@@ -108,3 +108,13 @@ Trocando de modelo no meio de uma sessão do Claude Code, o pedido já ia para o
 - Na mensagem em que o modelo (ou o provedor) da sessão muda, a ponte manda junto da fala do usuário um aviso curto: o modelo mudou, quem responde agora é tal modelo, e o nome dado nas respostas anteriores não deve ser repetido. Vale também na volta para a conta do Claude Code.
 - O aviso fica no histórico do Claude Code, para os modelos seguintes também lerem, e não aparece no app: a lista de mensagens e o título da sessão pulam esse bloco.
 - Sem troca de modelo, a fala do usuário vai como antes, sem nada junto.
+
+## Modelo que fica repetindo (0.10.3)
+
+Alguns modelos de outros provedores, no meio de uma resposta, entram em repetição: escrevem "Ok." "Done." "Final." milhares de vezes até bater no limite de saída. Numa sessão de verdade isso levou quase quatro minutos e deixou uma mensagem de 104 mil letras; no app, parecia que a troca de modelo não tinha funcionado.
+
+- O tradutor agora acompanha o texto que o modelo escreve. Quando os últimos 200 trechos (frases ou linhas) são quase todos iguais, no máximo 10 diferentes, ele corta a resposta e fecha a ligação com o provedor, que para de gerar e de cobrar.
+- Na primeira vez, o corte volta ao Claude Code como erro passageiro: ele joga fora o texto repetido e pede de novo, e a pessoa só vê a resposta boa. Se o mesmo modelo repetir outra vez em seguida (até 5 minutos depois), a resposta termina com o aviso "o modelo ficou repetindo o mesmo texto e a ponte interrompeu. Mande a mensagem de novo ou escolha outro modelo.".
+- O tradutor passou a pedir sempre a resposta em fluxo ao provedor, mesmo quando o Claude Code quer a resposta inteira de uma vez, para poder cortar no meio também nesse caso.
+- Os argumentos das ferramentas e o raciocínio do modelo não são vigiados; texto comum, listas, tabelas e código não disparam o corte.
+- `node teste-repeticao.mjs <caminho do claude> [uma|sempre]` mostra o corte com o Claude Code instalado e um provedor de mentira, sem chamar serviço nenhum e sem tocar na configuração do Claude Code.

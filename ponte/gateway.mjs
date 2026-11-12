@@ -77,7 +77,7 @@ export async function startGateway({ infoDir, resolve, log = () => {} }) {
     try { target = await resolve(decodeURIComponent(m[1]), body.model); } catch (e) { return fail(res, 400, "invalid_request_error", e.message); }
     try {
       if (target.kind === "anthropic") await passThrough(req, res, body, target);
-      else await viaOpenAI(res, body, target);
+      else await viaOpenAI(res, body, target, log);
     } catch (e) {
       log(`Tradutor: ${e.message}`);
       if (!res.headersSent) fail(res, 502, "api_error", `O provedor não respondeu: ${e.message}`);
@@ -220,16 +220,47 @@ export function toOpenAI(body, t) {
 const stopReason = (f) => f === "tool_calls" || f === "function_call" ? "tool_use" : f === "length" ? "max_tokens" : "end_turn";
 const msgID = () => "msg_ponte_" + randomBytes(12).toString("hex");
 
-async function viaOpenAI(res, b, t) {
+// --- Modelo empacado ---
+
+/**
+ * Diz quando o modelo empacou repetindo as mesmas poucas frases. Um modelo pequeno já respondeu "Ok. Done. Emit."
+ * milhares de vezes, até bater no limite da resposta: quase quatro minutos e 32 mil tokens pagos por nada.
+ * Recebe cada pedaço do texto da resposta (nunca os argumentos de ferramenta, que podem repetir de propósito)
+ * e devolve true quando as últimas `size` frases não passam de `few` frases diferentes.
+ */
+export function loopWatch(size = 200, few = 10) {
+  let tail = "";
+  const last = [];
+  return (text) => {
+    tail += text;
+    const parts = tail.split(/(?<=[.!?…:;])\s+|\n+/);
+    tail = parts.pop() ?? "";
+    // Um trecho comprido sem ponto nem quebra de linha também conta, aos pedaços.
+    while (tail.length > 400) { parts.push(tail.slice(0, 40)); tail = tail.slice(40); }
+    for (const part of parts) { const p = part.trim(); if (p) last.push(p.slice(0, 80)); }
+    if (last.length > size) last.splice(0, last.length - size);
+    return last.length === size && new Set(last).size <= few;
+  };
+}
+
+/** Modelo → hora do último corte por repetição. Na primeira vez o Claude Code tenta de novo; na segunda seguida, para. */
+const lastLoop = new Map();
+const LOOP_AGAIN_MS = 5 * 60_000;
+
+async function viaOpenAI(res, b, t, log = () => {}) {
   const req = toOpenAI(b, t);
   const stream = b.stream === true;
-  if (stream) { req.stream = true; req.stream_options = { include_usage: true }; }
+  // Sempre em fluxo com o provedor, mesmo quando o Claude Code quer a resposta inteira de uma vez:
+  // só assim dá para cortar na hora um modelo que empacou.
+  req.stream = true; req.stream_options = { include_usage: true };
   const base = (t.base || OPENAI_BASES[t.npm] || "").replace(/\/+$/, "");
   if (!base) throw new Error(`não sei o endereço do provedor (${t.npm})`);
+  const upstream = new AbortController();
   const r = await fetch(`${base}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${t.key}` },
     body: JSON.stringify(req),
+    signal: upstream.signal,
   });
   if (!r.ok) {
     const detail = (await r.text()).slice(0, 800);
@@ -241,55 +272,55 @@ async function viaOpenAI(res, b, t) {
     const type = r.status === 429 ? "rate_limit_error" : r.status === 401 || r.status === 403 ? "authentication_error" : r.status >= 500 ? "api_error" : "invalid_request_error";
     return fail(res, r.status, type, `${t.model}: ${message}`);
   }
-  if (!stream) {
-    const j = await r.json();
-    const msg = j.choices?.[0]?.message ?? {};
-    const content = [];
-    if (msg.content) content.push({ type: "text", text: msg.content });
-    for (const c of msg.tool_calls ?? []) {
-      let input = {};
-      try { input = JSON.parse(c.function?.arguments || "{}"); } catch {}
-      content.push({ type: "tool_use", id: c.id || "toolu_" + randomBytes(8).toString("hex"), name: c.function?.name, input });
-    }
-    res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({
-      id: msgID(), type: "message", role: "assistant", model: t.model, content,
-      stop_reason: stopReason(j.choices?.[0]?.finish_reason), stop_sequence: null,
-      usage: { input_tokens: j.usage?.prompt_tokens ?? 0, output_tokens: j.usage?.completion_tokens ?? 0 },
-    }));
-  }
 
-  res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify({ type: event, ...data })}\n\n`);
-  send("message_start", { message: { id: msgID(), type: "message", role: "assistant", model: t.model, content: [],
-                                     stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+  if (stream) {
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    send("message_start", { message: { id: msgID(), type: "message", role: "assistant", model: t.model, content: [],
+                                       stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+  }
+  const content = [];           // a resposta inteira, para quem não pediu fluxo; content[index] é o bloco aberto
   let index = -1;
   let open = null;              // { kind: "text" } | { kind: "tool", call }
   let finish = null;
   let usage = { input: 0, output: 0 };
-  const close = () => { if (open) { send("content_block_stop", { index }); open = null; } };
+  let failed = null;            // erro que o provedor mandou no meio do fluxo
+  let looped = false;
+  const stuck = loopWatch();
+  const close = () => { if (open) { if (stream) send("content_block_stop", { index }); open = null; } };
   const handle = (chunk) => {
     if (chunk.usage) usage = { input: chunk.usage.prompt_tokens ?? usage.input, output: chunk.usage.completion_tokens ?? usage.output };
+    if (chunk.error) failed = chunk.error.message ?? String(chunk.error);
     const choice = chunk.choices?.[0];
     if (!choice) return;
     const d = choice.delta ?? {};
     if (typeof d.content === "string" && d.content) {
-      if (open?.kind !== "text") { close(); index++; open = { kind: "text" }; send("content_block_start", { index, content_block: { type: "text", text: "" } }); }
-      send("content_block_delta", { index, delta: { type: "text_delta", text: d.content } });
+      if (open?.kind !== "text") {
+        close(); index++; open = { kind: "text" };
+        content.push({ type: "text", text: "" });
+        if (stream) send("content_block_start", { index, content_block: { type: "text", text: "" } });
+      }
+      content[index].text += d.content;
+      if (stream) send("content_block_delta", { index, delta: { type: "text_delta", text: d.content } });
+      if (stuck(d.content)) looped = true;
     }
     for (const c of d.tool_calls ?? []) {
       const call = c.index ?? 0;
       if (open?.kind !== "tool" || open.call !== call) {
         close(); index++; open = { kind: "tool", call };
-        send("content_block_start", { index, content_block: { type: "tool_use", id: c.id || "toolu_" + randomBytes(8).toString("hex"), name: c.function?.name ?? "", input: {} } });
+        content.push({ type: "tool_use", id: c.id || "toolu_" + randomBytes(8).toString("hex"), name: c.function?.name ?? "", json: "" });
+        if (stream) send("content_block_start", { index, content_block: { type: "tool_use", id: content[index].id, name: content[index].name, input: {} } });
       }
-      if (c.function?.arguments) send("content_block_delta", { index, delta: { type: "input_json_delta", partial_json: c.function.arguments } });
+      if (c.function?.arguments) {
+        content[index].json += c.function.arguments;
+        if (stream) send("content_block_delta", { index, delta: { type: "input_json_delta", partial_json: c.function.arguments } });
+      }
     }
     if (choice.finish_reason) finish = choice.finish_reason;
   };
   const decoder = new TextDecoder();
   let buf = "";
-  for await (const piece of r.body) {
+  reading: for await (const piece of r.body) {
     buf += decoder.decode(piece, { stream: true });
     let cut;
     while ((cut = buf.indexOf("\n")) >= 0) {
@@ -298,9 +329,41 @@ async function viaOpenAI(res, b, t) {
       const data = line.slice(5).trim();
       if (data === "[DONE]") continue;
       try { handle(JSON.parse(data)); } catch {}
+      if (looped) break reading;
     }
   }
+
+  if (looped) {
+    try { upstream.abort(); } catch {}
+    const again = Date.now() - (lastLoop.get(t.model) ?? 0) < LOOP_AGAIN_MS;
+    lastLoop.set(t.model, Date.now());
+    const told = `${t.model}: o modelo ficou repetindo o mesmo texto e a ponte interrompeu. Mande a mensagem de novo ou escolha outro modelo.`;
+    log(`Tradutor: ${t.model} ficou repetindo o mesmo texto; resposta cortada (${again ? "segunda vez seguida" : "primeira vez"}, ${stream ? "em fluxo" : "resposta inteira"}).`);
+    if (!stream) return fail(res, again ? 400 : 500, again ? "invalid_request_error" : "api_error", told);
+    if (!again) {
+      // O bloco de texto fica aberto de propósito: o Claude Code descarta o que veio e pede de novo.
+      send("error", { error: { type: "api_error", message: told } });
+      return res.end();
+    }
+    send("content_block_delta", { index, delta: { type: "text_delta", text: `\n\n[${told}]` } });
+    finish = "stop";
+  }
   close();
+  if (!stream) {
+    if (!content.length && failed) return fail(res, 502, "api_error", `${t.model}: ${failed}`);
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({
+      id: msgID(), type: "message", role: "assistant", model: t.model,
+      content: content.map((c) => {
+        if (c.type !== "tool_use") return c;
+        let input = {};
+        try { input = JSON.parse(c.json || "{}"); } catch {}
+        return { type: "tool_use", id: c.id, name: c.name, input };
+      }),
+      stop_reason: stopReason(finish), stop_sequence: null,
+      usage: { input_tokens: usage.input, output_tokens: usage.output },
+    }));
+  }
   send("message_delta", { delta: { stop_reason: stopReason(finish), stop_sequence: null },
                           usage: { input_tokens: usage.input, output_tokens: usage.output } });
   send("message_stop", {});
