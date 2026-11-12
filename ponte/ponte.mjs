@@ -32,7 +32,7 @@ import { createClaudeCode } from "./claudecode.mjs";
 import { startGateway } from "./gateway.mjs";
 import { createLocais } from "./locais.mjs";
 
-const VERSION = "0.10.4";
+const VERSION = "0.10.5";
 /** Transmissor oficial (fica vazio até ser publicado; aí a ponte usa o túnel). */
 const DEFAULT_RELAY = "https://elizium-transmissor.elizium-transmissor.workers.dev";
 const args = process.argv.slice(2);
@@ -372,8 +372,8 @@ function officeText(buf, ext) {
 // os projetos (instruções e memória). O app mostra a lista, a pessoa escolhe no celular quais entram nas conversas
 // e só então o app pede o texto de cada uma. Só leitura. A política da empresa fecha com "memorias": false.
 const MEM_LETRAS_ARQUIVO = 24000;
-const MEM_LETRAS_FONTE = 600000;
-const MEM_ARQUIVOS = 400;
+const MEM_LETRAS_FONTE = 1500000;
+const MEM_ARQUIVOS = 600;
 const MEM_FONTES = 60;
 
 async function memoryFile(path, nome) {
